@@ -1,10 +1,12 @@
-"""The decision engine: given the board and a strategy, pick a player."""
+"""The decision engine: given the board, a strategy, and a league, pick a player."""
 
 from __future__ import annotations
 
 from collections import Counter
 
 from nfl_fantasy.platforms.base import DraftState, Player
+from nfl_fantasy.roster import need_multiplier
+from nfl_fantasy.settings import LeagueSettings
 from nfl_fantasy.strategy import Strategy
 
 PREFER_BONUS = 1.15
@@ -12,16 +14,11 @@ AVOID_PENALTY = 0.5
 
 
 def overall_pick_number(round_number: int, pick_in_round: int, teams: int) -> int:
-    """Convert a (round, pick) pair into an overall pick number."""
     return (round_number - 1) * teams + pick_in_round
 
 
 def value_of(player: Player) -> float:
-    """A single comparable number for a player.
-
-    Projections are preferred; ADP is the fallback so the bot still works
-    before projections are wired up.
-    """
+    """A single comparable number. Projections win; ADP is the fallback."""
     if player.projected_points is not None:
         return player.projected_points
     if player.adp is not None:
@@ -29,10 +26,29 @@ def value_of(player: Player) -> float:
     return 0.0
 
 
-def score(player: Player, strategy: Strategy, round_number: int) -> float:
-    """Apply the strategy's soft preferences to a player's raw value."""
-    result = value_of(player) * strategy.position_weight.get(player.position, 1.0)
-    plan = strategy.plan_for_round(round_number)
+def format_multiplier(position: str, strategy: Strategy, settings: LeagueSettings) -> float:
+    """Adjustments that depend on the league's format, not your preferences."""
+    multiplier = 1.0
+    if position == "QB" and settings.is_superflex:
+        multiplier *= strategy.superflex_qb_weight
+    if position == "TE" and settings.scoring.is_te_premium:
+        multiplier *= strategy.te_premium_weight
+    return multiplier
+
+
+def score(
+    player: Player,
+    strategy: Strategy,
+    settings: LeagueSettings,
+    state: DraftState,
+) -> float:
+    """Raw value adjusted by league format, roster need, and your preferences."""
+    result = value_of(player)
+    result *= strategy.position_weight.get(player.position, 1.0)
+    result *= format_multiplier(player.position, strategy, settings)
+    result *= need_multiplier(player.position, state.my_roster, settings)
+
+    plan = strategy.plan_for_round(state.round)
     if plan:
         if player.position in plan.prefer:
             result *= PREFER_BONUS
@@ -42,9 +58,13 @@ def score(player: Player, strategy: Strategy, round_number: int) -> float:
 
 
 def eligible(
-    player: Player, state: DraftState, strategy: Strategy, overall: int
+    player: Player,
+    state: DraftState,
+    strategy: Strategy,
+    settings: LeagueSettings,
+    overall: int,
 ) -> bool:
-    """Hard constraints: roster caps, position gates, and reach limit."""
+    """Hard constraints: roster caps, position gates, and the reach limit."""
     rostered = Counter(p.position for p in state.my_roster)
     if not strategy.may_draft(player.position, state.round, rostered[player.position]):
         return False
@@ -55,16 +75,28 @@ def eligible(
     )
 
 
-def choose_pick(
-    state: DraftState, strategy: Strategy, available: list[Player]
-) -> Player | None:
-    """The highest-scoring player who satisfies every hard constraint.
+def rank_board(
+    state: DraftState,
+    strategy: Strategy,
+    settings: LeagueSettings,
+    available: list[Player],
+) -> list[tuple[Player, float]]:
+    """Every eligible player, best first. This is what the UI shows you."""
+    overall = overall_pick_number(state.round, state.pick, settings.teams)
+    scored = [
+        (p, score(p, strategy, settings, state))
+        for p in available
+        if eligible(p, state, strategy, settings, overall)
+    ]
+    return sorted(scored, key=lambda pair: pair[1], reverse=True)
 
-    Returns None when nothing is eligible -- the caller should fall back to
-    best-available or hand control back to a human.
-    """
-    overall = overall_pick_number(state.round, state.pick, strategy.league.teams)
-    candidates = [p for p in available if eligible(p, state, strategy, overall)]
-    if not candidates:
-        return None
-    return max(candidates, key=lambda p: score(p, strategy, state.round))
+
+def choose_pick(
+    state: DraftState,
+    strategy: Strategy,
+    settings: LeagueSettings,
+    available: list[Player],
+) -> Player | None:
+    """The single best eligible player, or None if nothing qualifies."""
+    ranked = rank_board(state, strategy, settings, available)
+    return ranked[0][0] if ranked else None

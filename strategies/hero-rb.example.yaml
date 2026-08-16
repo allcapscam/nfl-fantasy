@@ -1,0 +1,42 @@
+# Copy to strategies/hero-rb.yaml and edit.
+#
+# One elite running back early, then hammer receivers while everyone else
+# reaches for RB2s.
+
+name: "hero RB"
+
+earliest_round:
+  QB: 6
+  TE: 5
+  K: 15
+  DST: 14
+
+max_per_position:
+  QB: 2
+  RB: 5
+  TE: 2
+  K: 1
+  DST: 1
+
+position_weight:
+  WR: 1.12
+
+round_plan:
+  - round: 1
+    prefer: [RB]
+    avoid: [QB, TE, K, DST]
+  - round: 2
+    prefer: [WR]
+    avoid: [RB, K, DST]
+  - round: 3
+    prefer: [WR]
+    avoid: [RB]
+  - round: 4
+    prefer: [WR, TE]
+  - round: 6
+    prefer: [QB, RB]
+
+reach_tolerance: 6
+
+superflex_qb_weight: 1.40
+te_premium_weight: 1.15

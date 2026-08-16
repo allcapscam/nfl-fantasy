@@ -1,0 +1,44 @@
+# Copy to strategies/balanced.yaml and edit.
+#
+# A strategy is portable across leagues. It describes how you like to draft, not
+# what the league requires -- roster size, superflex, and PPR come from `sync`,
+# and the engine adapts this file to each league automatically.
+
+name: "balanced value"
+
+# Hard constraints. Never violated.
+earliest_round:
+  QB: 4
+  TE: 3
+  K: 14
+  DST: 13
+
+max_per_position:
+  QB: 2
+  TE: 2
+  K: 1
+  DST: 1
+
+# Soft preferences. These rank the players that passed the constraints.
+position_weight:
+  RB: 1.05
+  WR: 1.05
+
+round_plan:
+  - round: 1
+    prefer: [RB, WR]
+    avoid: [QB, TE, K, DST]
+  - round: 2
+    prefer: [RB, WR]
+    avoid: [K, DST]
+  - round: 3
+    prefer: [WR, RB, TE]
+  - round: 4
+    prefer: [QB, WR]
+
+# How many ADP slots early the bot will take a player it wants.
+reach_tolerance: 10
+
+# Applied only when sync reports the league actually has these rules.
+superflex_qb_weight: 1.35
+te_premium_weight: 1.15

@@ -1,26 +1,77 @@
 # NFL Fantasy Draft Bot
 
-A bot that runs your fantasy football draft for you, following a strategy you write.
+Drafts your fantasy football rosters according to a strategy you write — across
+several leagues on Sleeper, ESPN, and Yahoo at once.
 
-The idea: your edge is the strategy, not the clicking. You describe how you want
-to draft — which positions to gate off until later rounds, what to prioritize in
-each round, how far you're willing to reach off ADP — and the bot executes it
-pick after pick without getting talked out of the plan at 11pm on a Thursday.
+Your edge is the strategy, not the clicking. You describe how you want to draft
+— which positions to gate off until later rounds, what to prioritize each round,
+how far you'll reach off ADP — and the bot applies it consistently in every
+league, adapting it to each league's actual roster rules.
+
+## Read this first: the platforms are read-only
+
+None of the three platforms let a third-party tool submit a draft pick.
+
+- **Sleeper** — the API is explicitly read-only: "No API Token is necessary, as
+  you cannot modify contents via this API." There is no make-pick endpoint.
+- **Yahoo** — the Fantasy Sports API grants read access only.
+- **ESPN** — has no public API at all; the endpoints in common use are
+  undocumented and read-only in practice.
+
+So this tool does not click your picks. It does the two things that are
+legitimately automatable, which get you most of the way there:
+
+1. **`queue`** — exports a ranked player list, per league, built from your
+   strategy. You load it into that platform's own draft queue / custom rankings,
+   and the platform's native autodraft executes your strategy when you're away.
+2. **`board`** — reads the live draft and tells you who to take right now, given
+   your strategy, your roster so far, and who's already gone. For when you're at
+   the keyboard.
+
+Browser automation could click for you, but it's fragile and violates all three
+platforms' terms of service, so it isn't built here.
+
+## Multiple leagues
+
+Leagues differ in ways that change the right pick, so the bot pulls each
+league's real rules from its platform rather than trusting you to retype them:
+
+```bash
+uv run draftbot sync
+```
+
+That writes roster slots and scoring per league. From then on the same strategy
+file behaves differently where the league differs — a superflex league takes the
+QB over the equally-ranked RB; a TE-premium league lifts tight ends; a 3-WR
+league wants the WR3 a 2-WR league benches. There is a test for exactly this in
+[test_draft.py](tests/test_draft.py) — same strategy, same board, opposite pick.
+
+`leagues.yaml` is the registry:
+
+```yaml
+leagues:
+  home:
+    platform: sleeper
+    league_id: "123456789"
+    strategy: strategies/balanced.yaml
+  work:
+    platform: espn
+    league_id: "456789"
+    strategy: strategies/balanced.yaml
+```
 
 ## How it works
 
-Three pieces, kept separate on purpose:
-
 | Piece | File | Job |
 | --- | --- | --- |
-| Strategy | `strategy.yaml` | Your rules, in YAML. No code. |
-| Engine | `src/nfl_fantasy/draft.py` | Scores the board against the strategy and picks. |
-| Platform adapter | `src/nfl_fantasy/platforms/` | Talks to Sleeper / ESPN / Yahoo. |
+| League registry | `leagues.yaml` | Which leagues, which platform, which strategy |
+| Synced settings | `data/settings/*.json` | Roster slots + scoring, pulled from the platform |
+| Strategy | `strategies/*.yaml` | Your rules. Portable across leagues |
+| Roster logic | [roster.py](src/nfl_fantasy/roster.py) | What your lineup still needs |
+| Engine | [draft.py](src/nfl_fantasy/draft.py) | Scores the board, ranks it |
+| Adapters | [platforms/](src/nfl_fantasy/platforms/) | Per-platform reads |
 
-The engine never knows which platform it's on, so you can test a strategy against
-a mock draft and then point it at the real thing unchanged.
-
-Rules come in two kinds:
+Strategy rules come in two kinds:
 
 - **Hard constraints** (`earliest_round`, `max_per_position`) — never violated.
   This is how you say "no kicker before round 14."
@@ -36,43 +87,56 @@ Requires [uv](https://docs.astral.sh/uv/).
 uv sync
 ```
 
-Then create your strategy and your credentials:
-
 ```bash
-cp strategy.example.yaml strategy.yaml
+cp leagues.example.yaml leagues.yaml
+cp strategies/balanced.example.yaml strategies/balanced.yaml
 cp .env.example .env
 ```
 
-Both are gitignored — this repo is public, so your real strategy and your league
-cookies stay on your machine.
+`leagues.yaml`, `strategies/*.yaml`, and `.env` are gitignored — this repo is
+public, so your real strategy and league credentials stay on your machine.
 
 ## Usage
 
-Print what your strategy will do, round by round:
-
 ```bash
-uv run draftbot show
+uv run draftbot leagues
 ```
 
-Run against a live draft:
+```bash
+uv run draftbot sync
+```
 
 ```bash
-uv run draftbot draft
+uv run draftbot show --league home
+```
+
+```bash
+uv run draftbot board --league home
+```
+
+```bash
+uv run draftbot queue --league home
 ```
 
 ## Status
 
-Working: strategy schema and validation, the pick engine, tests.
+**Working:** multi-league registry, normalized settings model across platforms,
+roster/flex logic including superflex and TE-premium, the ranking engine, the
+Sleeper adapter (verified live against the API), queue export, 21 tests.
 
-Not built yet:
+**Not built yet:**
 
-- **Platform adapters.** `platforms/base.py` defines the interface; no concrete
-  adapter exists. Sleeper is the easiest first target — public read API, no OAuth.
-- **Projections.** The engine falls back to ADP when `projected_points` is
-  missing, so it works today but it's only as good as ADP until real projections
-  are wired in.
-- **Roster-slot awareness.** The engine counts positions but doesn't yet reason
-  about FLEX or bench depth.
+- **ESPN and Yahoo adapters.** The protocol is defined and Sleeper implements it.
+  ESPN needs `espn_s2`/`SWID` cookies for private leagues; Yahoo needs a
+  registered OAuth app.
+- **ADP and projections.** Sleeper's player endpoint carries neither, so the
+  engine's `reach_tolerance` has nothing to bite on yet and rankings fall back to
+  raw value. This is the biggest gap — an ADP source is needed before the queue
+  export is genuinely useful.
+- **Strategy/format conflict warnings.** Nothing yet catches a strategy that
+  gates QB until round 6 being pointed at a superflex league, where that's a bad
+  idea.
+- **Auction and keeper/dynasty formats.** The engine assumes a snake draft.
 
 ## Tests
 

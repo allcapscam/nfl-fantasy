@@ -1,0 +1,31 @@
+# Copy to leagues.yaml and fill in. leagues.yaml is gitignored.
+#
+# Roster slots and scoring are NOT configured here -- `draftbot sync` pulls them
+# from each platform so they can't drift out of date with the real league.
+#
+# Finding your league id:
+#   Sleeper  the number in app.sleeper.com/leagues/<LEAGUE_ID>/...
+#   ESPN     the leagueId=<ID> parameter in the fantasy.espn.com URL
+#   Yahoo    the number in football.fantasysports.yahoo.com/f1/<LEAGUE_ID>
+
+leagues:
+  home:
+    platform: sleeper
+    league_id: "REPLACE_ME"
+    strategy: strategies/balanced.yaml
+
+  work:
+    platform: espn
+    league_id: "REPLACE_ME"
+    strategy: strategies/balanced.yaml
+
+  money:
+    platform: yahoo
+    league_id: "REPLACE_ME"
+    strategy: strategies/hero-rb.yaml
+
+  dynasty:
+    platform: sleeper
+    league_id: "REPLACE_ME"
+    strategy: strategies/hero-rb.yaml
+    enabled: false

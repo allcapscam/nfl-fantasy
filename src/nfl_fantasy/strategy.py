@@ -1,7 +1,9 @@
 """Strategy definition: the rules the bot drafts by.
 
-The strategy lives in a YAML file so it can be edited between mocks without
-touching code. `strategy.example.yaml` is the annotated starting point.
+A strategy is portable across leagues on purpose. It says how you like to draft
+-- not how many WRs start, which is a property of the league and gets pulled
+from the platform. That split means one strategy file can be pointed at several
+leagues, and the engine adapts it to each league's roster rules.
 """
 
 from __future__ import annotations
@@ -15,61 +17,51 @@ from pydantic import BaseModel, Field
 Position = Literal["QB", "RB", "WR", "TE", "K", "DST"]
 
 
-class League(BaseModel):
-    """Settings that come from the league, not from you."""
-
-    teams: int = 12
-    draft_slot: int = Field(1, description="Your pick in round 1, 1-indexed.")
-    scoring: Literal["standard", "half_ppr", "ppr"] = "half_ppr"
-    roster: dict[str, int] = Field(
-        default_factory=lambda: {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DST": 1, "BENCH": 6}
-    )
-
-
 class RoundPlan(BaseModel):
     """What you want to come away with in a given round."""
 
     round: int
-    prefer: list[Position]
+    prefer: list[Position] = Field(default_factory=list)
     avoid: list[Position] = Field(default_factory=list)
 
 
 class Strategy(BaseModel):
-    """The whole strategy: hard constraints plus soft preferences."""
+    """Hard constraints plus soft preferences."""
 
     name: str = "default"
-    league: League = Field(default_factory=League)
 
-    # Hard constraints -- the bot will not violate these.
+    # Hard constraints -- never violated.
     earliest_round: dict[str, int] = Field(
         default_factory=dict,
-        description="Position -> first round it may be taken. e.g. {'K': 14}",
+        description="Position -> first round it may be taken, e.g. {'K': 14}",
     )
     max_per_position: dict[str, int] = Field(default_factory=dict)
 
-    # Soft preferences -- used to rank players that pass the constraints.
+    # Soft preferences -- rank the players that pass the constraints.
     round_plan: list[RoundPlan] = Field(default_factory=list)
-    position_weight: dict[str, float] = Field(
-        default_factory=dict,
-        description="Multiplier applied to a player's value by position.",
-    )
+    position_weight: dict[str, float] = Field(default_factory=dict)
     reach_tolerance: int = Field(
-        8,
-        description="How many ADP slots early the bot will take a player it wants.",
+        8, description="How many ADP slots early the bot will take a player it wants."
+    )
+
+    # Format adjustments, applied only when the synced league settings match.
+    superflex_qb_weight: float = Field(
+        1.35, description="QB multiplier when the league has a superflex slot."
+    )
+    te_premium_weight: float = Field(
+        1.15, description="TE multiplier when the league gives TEs bonus PPR."
     )
 
     @classmethod
     def load(cls, path: str | Path) -> Strategy:
-        """Read a strategy YAML file and validate it."""
         text = Path(path).read_text(encoding="utf-8")
         return cls.model_validate(yaml.safe_load(text) or {})
 
     def plan_for_round(self, round_number: int) -> RoundPlan | None:
-        """The plan entry for a round, if one was written."""
         return next((p for p in self.round_plan if p.round == round_number), None)
 
     def may_draft(self, position: str, round_number: int, already_rostered: int) -> bool:
-        """Check a position against the hard constraints only."""
+        """Hard constraints only."""
         if round_number < self.earliest_round.get(position, 1):
             return False
         cap = self.max_per_position.get(position)

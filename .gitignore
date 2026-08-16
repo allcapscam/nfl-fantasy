@@ -22,10 +22,15 @@ htmlcov/
 .env
 .env.local
 *.secret
-strategy.yaml
 
-# Cached platform / stats data
-data/cache/
+# Your real leagues and strategies stay out of a public repo.
+# The .example.yaml templates are committed.
+leagues.yaml
+strategies/*.yaml
+!strategies/*.example.yaml
+
+# Synced settings, cached player data, generated queues
+data/
 *.sqlite3
 
 # Editors and OS
