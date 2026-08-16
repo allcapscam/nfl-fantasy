@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Environments
+.venv/
+venv/
+.python-version
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Secrets and local config
+.env
+.env.local
+*.secret
+strategy.yaml
+
+# Cached platform / stats data
+data/cache/
+*.sqlite3
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
