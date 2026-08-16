@@ -7,6 +7,7 @@ import csv
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
 
@@ -76,7 +77,11 @@ def cmd_rankings(registry: LeagueRegistry, key: str, csv_path: Path | None) -> i
         if csv_path
         else FantasyProsSource(season=int(os.environ.get("SEASON", "2026")))
     )
-    rankings = source.fetch(settings)
+    try:
+        rankings = source.fetch(settings)
+    except RuntimeError as error:
+        console.print(f"[red]{ref.key}:[/red] {error}")
+        return 1
     save_rankings(ref.key, rankings)
     console.print(f"[green]{ref.key}:[/green] cached {len(rankings)} rankings "
                   f"for a {settings.describe()} league")
@@ -171,6 +176,7 @@ def cmd_queue(registry: LeagueRegistry, key: str, limit: int, out: Path | None) 
 
 
 def main() -> int:
+    load_dotenv()  # credentials live in .env, which is gitignored
     parser = argparse.ArgumentParser(prog="draftbot")
     parser.add_argument("--registry", type=Path, default=DEFAULT_REGISTRY)
     sub = parser.add_subparsers(dest="command", required=True)

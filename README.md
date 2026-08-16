@@ -106,13 +106,14 @@ uv run draftbot leagues
 uv run draftbot sync
 ```
 
-Pull player values (needs `FANTASYPROS_API_KEY`):
+Pull player values (needs `FANTASYPROS_API_KEY` in `.env`):
 
 ```bash
 uv run draftbot rankings --league home
 ```
 
-No API key? Export rankings from FantasyPros as CSV and read that instead:
+Free-tier keys return only 10 players — see below. The CSV export has no such
+limit:
 
 ```bash
 uv run draftbot rankings --league home --csv ~/Downloads/FantasyPros_Rankings.csv
@@ -134,21 +135,37 @@ uv run draftbot queue --league home
 
 **Working:** multi-league registry, normalized settings model across platforms,
 roster/flex logic including superflex and TE-premium, the ranking engine,
-FantasyPros rankings via API or CSV export, name matching (verified against the
-live Sleeper player list), the Sleeper adapter, queue export, 36 tests.
+FantasyPros rankings and projections via API or CSV export, name matching
+(verified against the live Sleeper player list), the Sleeper adapter, queue
+export, 39 tests.
 
 **Not built yet:**
 
 - **ESPN and Yahoo adapters.** The protocol is defined and Sleeper implements it.
   ESPN needs `espn_s2`/`SWID` cookies for private leagues; Yahoo needs a
   registered OAuth app.
-- **Real projections.** The FantasyPros consensus endpoint gives expert rank,
-  which stands in for ADP. Actual point projections are a separate endpoint and
-  aren't wired up, so `value_of` still ranks by ADP rather than projected points.
 - **Strategy/format conflict warnings.** Nothing yet catches a strategy that
   gates QB until round 6 being pointed at a superflex league, where that's a bad
   idea.
 - **Auction and keeper/dynasty formats.** The engine assumes a snake draft.
+
+### Two FantasyPros traps
+
+Both were found by probing the live API, and both are guarded in code.
+
+**Free-tier keys return 10 players.** The response carries
+`public_api_limited: true`, `tier: "free"`, and exactly ten records regardless of
+any `limit`, `offset`, `page`, or `per_page` you pass. Ten players cannot fill a
+sixteen-round draft, so [fantasypros.py](src/nfl_fantasy/sources/fantasypros.py)
+raises `FreeTierError` rather than hand back a board that short. Use the CSV
+export, or a production key from a HOF subscription.
+
+**Position-filtered ranks are not comparable.** Requesting `position=RB`
+renumbers `rank_ecr` from 1 — so the K1 and the RB1 both come back as rank 1.
+Merging per-position calls to rebuild a full board would rank a kicker first
+overall. Only `position=ALL` (or `OP` for superflex) returns true overall ranks,
+and this module never merges per-position ranking calls. Projections are the
+exception and are merged across positions, because points are an absolute scale.
 
 ### A note on name matching
 
