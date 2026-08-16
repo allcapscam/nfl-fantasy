@@ -17,6 +17,33 @@ from nfl_fantasy.sources.base import Ranking
 
 SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
 
+#: Sites disagree about team codes. Everything maps to Sleeper's spelling.
+#: FantasyPros writes Jacksonville as JAC where Sleeper writes JAX, which
+#: silently broke the Jaguars defense until it was caught by diffing the two
+#: code sets against each other.
+TEAM_ALIASES = {
+    "JAC": "JAX",
+    "OAK": "LV",
+    "SD": "LAC",
+    "SL": "LAR",
+    "STL": "LAR",
+    "LA": "LAR",
+    "WSH": "WAS",
+    "WFT": "WAS",
+    "ARZ": "ARI",
+    "BLT": "BAL",
+    "CLV": "CLE",
+    "HST": "HOU",
+}
+
+
+def normalize_team(team: str | None) -> str | None:
+    """Map a team code to Sleeper's spelling."""
+    if not team:
+        return None
+    code = team.strip().upper()
+    return TEAM_ALIASES.get(code, code)
+
 
 def normalize_name(name: str) -> str:
     """Reduce a name to a comparable key."""
@@ -37,7 +64,7 @@ def match_key(name: str, position: str, team: str | None) -> str:
     back to the last word of the name only when no team code is given.
     """
     if position == "DST":
-        code = (team or "").strip().upper()
+        code = normalize_team(team) or ""
         if not code:
             words = normalize_name(name).split()
             code = words[-1].upper() if words else ""

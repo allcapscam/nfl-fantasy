@@ -17,12 +17,27 @@ def overall_pick_number(round_number: int, pick_in_round: int, teams: int) -> in
     return (round_number - 1) * teams + pick_in_round
 
 
+#: Ranks are converted to value by halving every RANK_HALF_LIFE places.
+#: A linear curve (1000 - rank) was wrong: it made the top of the board almost
+#: flat, so the gap between the #1 and #11 player was ~1% while a "prefer this
+#: position" bonus was 15%. Soft preferences then silently outranked value by
+#: a hundred places. With a half-life curve, a 15% bonus is worth about six
+#: ranks -- enough to break ties, not enough to overturn the board.
+RANK_HALF_LIFE = 30.0
+RANK_VALUE_BASE = 1000.0
+
+
+def value_from_rank(rank: float) -> float:
+    """Draft value implied by a consensus rank."""
+    return RANK_VALUE_BASE * 0.5 ** (max(0.0, rank - 1.0) / RANK_HALF_LIFE)
+
+
 def value_of(player: Player) -> float:
-    """A single comparable number. Projections win; ADP is the fallback."""
+    """A single comparable number. Projections win; rank is the fallback."""
     if player.projected_points is not None:
         return player.projected_points
     if player.adp is not None:
-        return max(0.0, 1000.0 - player.adp)
+        return value_from_rank(player.adp)
     return 0.0
 
 
@@ -100,3 +115,89 @@ def choose_pick(
     """The single best eligible player, or None if nothing qualifies."""
     ranked = rank_board(state, strategy, settings, available)
     return ranked[0][0] if ranked else None
+
+
+def expected_round(rank: float, teams: int) -> int:
+    """Which round a player ranked `rank` is expected to go in."""
+    return int(max(0.0, rank - 1.0) // teams) + 1
+
+
+def rank_queue(
+    strategy: Strategy, settings: LeagueSettings, available: list[Player]
+) -> list[tuple[Player, float]]:
+    """A static preference list for the platform's own autodraft.
+
+    Different from `rank_board` in two ways, both because a queue is not a
+    single pick. The reach limit is skipped -- it asks "is this too early *for
+    this pick*", which is meaningless in a list covering every pick. And round
+    gates are applied against the round a player is expected to go in, so a
+    kicker gated until round 14 is dropped if he ranks inside round 3 but kept
+    if he ranks where a round-15 pick would land.
+    """
+    scored: list[tuple[Player, float]] = []
+    for player in available:
+        if player.adp is None:
+            continue
+
+        # A position gated until round N doesn't remove the player, it delays
+        # him. Dropping him outright would mean never taking the TE1 even if he
+        # fell past the gate; demoting him to the gate's first pick keeps him
+        # available exactly when the strategy allows.
+        gate = strategy.earliest_round.get(player.position, 1)
+        earliest_pick = (gate - 1) * settings.teams + 1
+        effective_rank = max(player.adp, float(earliest_pick))
+
+        round_number = expected_round(effective_rank, settings.teams)
+        if not strategy.may_draft(player.position, round_number, 0):
+            continue
+
+        state = DraftState(round=round_number, pick=1)
+        adjusted = player.model_copy(update={"adp": effective_rank})
+        scored.append((player, score(adjusted, strategy, settings, state)))
+
+    ranked = sorted(scored, key=lambda pair: pair[1], reverse=True)
+    return ensure_startable_positions(ranked, strategy, settings)
+
+
+def ensure_startable_positions(
+    ranked: list[tuple[Player, float]],
+    strategy: Strategy,
+    settings: LeagueSettings,
+    rounds: int | None = None,
+) -> list[tuple[Player, float]]:
+    """Guarantee the queue can actually fill the required starting lineup.
+
+    Consensus rankings bury kickers and defenses below the last pick of the
+    draft -- they are near-worthless on a points-per-rank basis. But a roster
+    with a K slot and a DST slot must fill them, and an autodraft working off a
+    pure value ranking would end the draft with holes. So for each position
+    with a dedicated starting slot, promote the best candidates to just after
+    the round the strategy allows them.
+    """
+    window = (rounds or len(settings.roster_slots)) * settings.teams
+    result = list(ranked)
+
+    for position in sorted(set(settings.starting_slots)):
+        required = settings.starters_at(position)
+        if not required:
+            continue
+        present = sum(1 for p, _ in result[:window] if p.position == position)
+        if present >= required:
+            continue
+
+        # A gate can be later than the draft is long (K gated to round 14 in a
+        # ten-round league). Honour it where possible, but never past the last
+        # pick -- a player placed beyond the end of the draft is the same as
+        # not being in the queue at all.
+        gate = strategy.earliest_round.get(position, 1)
+        insert_at = min((gate - 1) * settings.teams, window - required, len(result))
+        insert_at = max(insert_at, 0)
+        candidates = [pair for pair in result[window:] if pair[0].position == position]
+        promoting = candidates[: required - present]
+        if not promoting:
+            continue
+        for pair in promoting:
+            result.remove(pair)
+        result[insert_at:insert_at] = promoting
+
+    return result

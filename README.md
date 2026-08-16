@@ -136,8 +136,24 @@ uv run draftbot queue --league home
 **Working:** multi-league registry, normalized settings model across platforms,
 roster/flex logic including superflex and TE-premium, the ranking engine,
 FantasyPros rankings and projections via API or CSV export, name matching
-(verified against the live Sleeper player list), the Sleeper adapter, queue
-export, 39 tests.
+(100% on the draftable range against a live Sleeper league), the Sleeper
+adapter, roster-valid queue export, 46 tests.
+
+### How the queue differs from the board
+
+`board` answers "who do I take at this pick"; `queue` produces a static list the
+platform's autodraft consumes top-down. They are not the same ranking:
+
+- The **reach limit** is skipped in the queue. "Too early for this pick" is
+  meaningless in a list spanning every pick.
+- **Round gates demote rather than drop.** A TE gated until round 3 who ranks in
+  round 2 stays in the queue, moved to round 3 — otherwise you'd never take the
+  TE1 even if he fell to you.
+- **Required starters are guaranteed.** Consensus rankings put the first kicker
+  below the last pick of the draft, because a kicker is nearly worthless per
+  rank. But a roster with a K slot must fill it, so positions with dedicated
+  starting slots are promoted to their gate round. Without this the autodraft
+  ends with holes in the lineup.
 
 **Not built yet:**
 

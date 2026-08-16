@@ -11,10 +11,10 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
 
-from nfl_fantasy.draft import rank_board
+from nfl_fantasy.draft import rank_board, rank_queue
 from nfl_fantasy.leagues import LeagueRef, LeagueRegistry
 from nfl_fantasy.matching import apply_rankings
-from nfl_fantasy.platforms.base import DraftState, Player
+from nfl_fantasy.platforms.base import Player
 from nfl_fantasy.platforms.sleeper import SleeperAdapter
 from nfl_fantasy.sources.csv_source import CsvRankingSource
 from nfl_fantasy.sources.fantasypros import FantasyProsSource
@@ -88,8 +88,15 @@ def cmd_rankings(registry: LeagueRegistry, key: str, csv_path: Path | None) -> i
     return 0
 
 
-def enriched_board(adapter, key: str) -> list[Player]:
-    """Available players with ADP and projections attached, if we have any."""
+def enriched_board(adapter, key: str, include_unranked: bool = False) -> list[Player]:
+    """Available players with ADP and projections attached, if we have any.
+
+    Platforms carry every player who has ever existed; a consensus ranking
+    carries the few hundred who will actually be drafted. Anyone outside the
+    rankings is dropped by default -- keeping them adds hundreds of zero-value
+    entries that crowd the board and could be picked once the reach filter
+    excludes everyone real.
+    """
     players = adapter.available_players()
     rankings = load_rankings(key)
     if not rankings:
@@ -97,11 +104,14 @@ def enriched_board(adapter, key: str) -> list[Player]:
                       f"Run: draftbot rankings --league {key}")
         return players
 
-    players, unmatched = apply_rankings(players, rankings)
-    if unmatched:
-        console.print(f"[dim]{len(unmatched)} players had no ranking match "
-                      f"(e.g. {', '.join(p.name for p in unmatched[:3])})[/dim]")
-    return players
+    players, unranked = apply_rankings(players, rankings)
+    if include_unranked:
+        return players
+
+    ranked = [p for p in players if p.adp is not None or p.projected_points is not None]
+    console.print(f"[dim]{len(ranked)} ranked players on the board "
+                  f"({len(unranked)} unranked hidden; --include-unranked to keep)[/dim]")
+    return ranked
 
 
 def cmd_show(registry: LeagueRegistry, key: str) -> int:
@@ -130,7 +140,9 @@ def cmd_show(registry: LeagueRegistry, key: str) -> int:
     return 0
 
 
-def cmd_board(registry: LeagueRegistry, key: str, limit: int) -> int:
+def cmd_board(
+    registry: LeagueRegistry, key: str, limit: int, include_unranked: bool = False
+) -> int:
     """What the bot would take right now, live."""
     ref = registry.get(key)
     adapter = build_adapter(ref)
@@ -138,7 +150,8 @@ def cmd_board(registry: LeagueRegistry, key: str, limit: int) -> int:
     settings = load_settings(key)
 
     state = adapter.get_state()
-    ranked = rank_board(state, strategy, settings, enriched_board(adapter, key))
+    board = enriched_board(adapter, key, include_unranked)
+    ranked = rank_board(state, strategy, settings, board)
     if not ranked:
         console.print("[yellow]No eligible players.[/yellow] "
                       "Constraints may be too tight, or the draft is over.")
@@ -160,8 +173,7 @@ def cmd_queue(registry: LeagueRegistry, key: str, limit: int, out: Path | None) 
     strategy = Strategy.load(ref.strategy)
     settings = load_settings(key)
 
-    state = DraftState(round=1, pick=settings.draft_slot or 1)
-    ranked = rank_board(state, strategy, settings, enriched_board(adapter, key))
+    ranked = rank_queue(strategy, settings, enriched_board(adapter, key))
 
     destination = out or Path(f"data/queue_{key}.csv")
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -199,6 +211,8 @@ def main() -> int:
     board = sub.add_parser("board", help="Live ranked board for a league.")
     board.add_argument("--league", required=True)
     board.add_argument("--limit", type=int, default=15)
+    board.add_argument("--include-unranked", action="store_true",
+                       help="Keep players with no ranking (normally hidden).")
 
     queue = sub.add_parser("queue", help="Export a ranking for the platform's autodraft.")
     queue.add_argument("--league", required=True)
@@ -222,7 +236,7 @@ def main() -> int:
     if args.command == "show":
         return cmd_show(registry, args.league)
     if args.command == "board":
-        return cmd_board(registry, args.league, args.limit)
+        return cmd_board(registry, args.league, args.limit, args.include_unranked)
     if args.command == "queue":
         return cmd_queue(registry, args.league, args.limit, args.out)
     return 1

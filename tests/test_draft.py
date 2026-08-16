@@ -1,4 +1,11 @@
-from nfl_fantasy.draft import choose_pick, overall_pick_number, rank_board
+from nfl_fantasy.draft import (
+    PREFER_BONUS,
+    choose_pick,
+    overall_pick_number,
+    rank_board,
+    rank_queue,
+    value_from_rank,
+)
 from nfl_fantasy.platforms.base import DraftState, Player
 from nfl_fantasy.settings import LeagueSettings, Scoring
 from nfl_fantasy.strategy import Strategy
@@ -97,6 +104,97 @@ def test_te_premium_lifts_tight_ends():
     )
     assert choose_pick(DraftState(round=3, pick=1), OPEN, LEAGUE, board).name == "WR1"
     assert choose_pick(DraftState(round=3, pick=1), OPEN, premium, board).name == "TE1"
+
+
+# -- the value curve ---------------------------------------------------------
+
+
+def test_value_decays_with_rank():
+    assert value_from_rank(1) > value_from_rank(10) > value_from_rank(100)
+
+
+def test_a_preference_bonus_cannot_overturn_the_board():
+    """Regression: with a linear curve, +15% was worth ~150 ranks.
+
+    A soft preference should break ties between comparable players, not vault a
+    mid-round player over an elite one.
+    """
+    elite = value_from_rank(1)
+    twenty_picks_later = value_from_rank(21) * PREFER_BONUS
+    assert twenty_picks_later < elite
+
+    # It should still be decisive between near-equals.
+    neighbour = value_from_rank(3) * PREFER_BONUS
+    assert neighbour > value_from_rank(1)
+
+
+# -- the queue ---------------------------------------------------------------
+
+QUEUE_STRATEGY = Strategy.model_validate({"earliest_round": {"TE": 3, "K": 14}})
+QUEUE_BOARD = [
+    Player(id="a", name="Elite RB", position="RB", adp=1),
+    Player(id="b", name="Elite TE", position="TE", adp=17),  # round 2 by rank
+    Player(id="c", name="Elite WR", position="WR", adp=20),
+    Player(id="d", name="Early K", position="K", adp=30),  # gated to round 14
+]
+
+
+def test_queue_ignores_the_reach_limit():
+    """A queue covers every pick, so "too early for this pick" is meaningless."""
+    tight = QUEUE_STRATEGY.model_copy(update={"reach_tolerance": 1})
+    assert len(rank_queue(tight, LEAGUE, QUEUE_BOARD)) == len(QUEUE_BOARD)
+
+
+def test_gated_player_is_demoted_not_dropped():
+    """Regression: the TE1 vanished from the queue instead of moving later."""
+    names = [p.name for p, _ in rank_queue(QUEUE_STRATEGY, LEAGUE, QUEUE_BOARD)]
+    assert "Elite TE" in names
+    # Demoted behind players ranked above the gate, not left at rank 17.
+    assert names.index("Elite TE") > names.index("Elite WR")
+
+
+def test_kicker_gated_to_round_fourteen_lands_late():
+    ranked = rank_queue(QUEUE_STRATEGY, LEAGUE, QUEUE_BOARD)
+    assert [p.name for p, _ in ranked][-1] == "Early K"
+
+
+def test_required_starters_are_promoted_into_the_draft():
+    """Regression: consensus ranks bury kickers past the last pick.
+
+    A roster with a K slot has to fill it, so an autodraft queue that never
+    reaches a kicker would end the draft with a hole in the lineup.
+    """
+    # A deep board where every kicker ranks below the end of the draft.
+    board = [
+        Player(id=f"w{i}", name=f"WR{i}", position="WR", adp=float(i))
+        for i in range(1, 200)
+    ]
+    board.append(Player(id="k", name="Only Kicker", position="K", adp=400.0))
+    board.append(Player(id="d", name="Only Defense", position="DST", adp=390.0))
+
+    strategy = Strategy.model_validate({"earliest_round": {"K": 9, "DST": 8}})
+    ranked = rank_queue(strategy, LEAGUE, board)
+    names = [p.name for p, _ in ranked]
+
+    draft_length = len(LEAGUE.roster_slots) * LEAGUE.teams
+    assert names.index("Only Kicker") < draft_length
+    assert names.index("Only Defense") < draft_length
+    # Promoted to their gate, not to the top of the board.
+    assert names.index("Only Kicker") >= (9 - 1) * LEAGUE.teams
+    assert names.index("Only Defense") >= (8 - 1) * LEAGUE.teams
+
+
+def test_gate_beyond_the_end_of_the_draft_is_clamped():
+    """A K gated to round 14 in a ten-round league still has to be reachable."""
+    board = [
+        Player(id=f"w{i}", name=f"WR{i}", position="WR", adp=float(i))
+        for i in range(1, 200)
+    ]
+    board.append(Player(id="k", name="Only Kicker", position="K", adp=400.0))
+
+    strategy = Strategy.model_validate({"earliest_round": {"K": 14}})
+    names = [p.name for p, _ in rank_queue(strategy, LEAGUE, board)]
+    assert names.index("Only Kicker") < len(LEAGUE.roster_slots) * LEAGUE.teams
 
 
 def test_rank_board_is_sorted_and_filtered():
