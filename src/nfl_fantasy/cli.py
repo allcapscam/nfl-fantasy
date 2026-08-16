@@ -12,9 +12,12 @@ from rich.table import Table
 
 from nfl_fantasy.draft import rank_board
 from nfl_fantasy.leagues import LeagueRef, LeagueRegistry
-from nfl_fantasy.platforms.base import DraftState
+from nfl_fantasy.matching import apply_rankings
+from nfl_fantasy.platforms.base import DraftState, Player
 from nfl_fantasy.platforms.sleeper import SleeperAdapter
-from nfl_fantasy.store import load_settings, save_settings
+from nfl_fantasy.sources.csv_source import CsvRankingSource
+from nfl_fantasy.sources.fantasypros import FantasyProsSource
+from nfl_fantasy.store import load_rankings, load_settings, save_rankings, save_settings
 from nfl_fantasy.strategy import Strategy
 
 console = Console()
@@ -64,6 +67,38 @@ def cmd_sync(registry: LeagueRegistry, only: str | None) -> int:
     return 1 if failures else 0
 
 
+def cmd_rankings(registry: LeagueRegistry, key: str, csv_path: Path | None) -> int:
+    """Pull player values for a league and cache them."""
+    ref = registry.get(key)
+    settings = load_settings(key)
+    source = (
+        CsvRankingSource(csv_path)
+        if csv_path
+        else FantasyProsSource(season=int(os.environ.get("SEASON", "2026")))
+    )
+    rankings = source.fetch(settings)
+    save_rankings(ref.key, rankings)
+    console.print(f"[green]{ref.key}:[/green] cached {len(rankings)} rankings "
+                  f"for a {settings.describe()} league")
+    return 0
+
+
+def enriched_board(adapter, key: str) -> list[Player]:
+    """Available players with ADP and projections attached, if we have any."""
+    players = adapter.available_players()
+    rankings = load_rankings(key)
+    if not rankings:
+        console.print(f"[yellow]No rankings cached for {key}.[/yellow] "
+                      f"Run: draftbot rankings --league {key}")
+        return players
+
+    players, unmatched = apply_rankings(players, rankings)
+    if unmatched:
+        console.print(f"[dim]{len(unmatched)} players had no ranking match "
+                      f"(e.g. {', '.join(p.name for p in unmatched[:3])})[/dim]")
+    return players
+
+
 def cmd_show(registry: LeagueRegistry, key: str) -> int:
     ref = registry.get(key)
     strategy = Strategy.load(ref.strategy)
@@ -98,17 +133,17 @@ def cmd_board(registry: LeagueRegistry, key: str, limit: int) -> int:
     settings = load_settings(key)
 
     state = adapter.get_state()
-    ranked = rank_board(state, strategy, settings, adapter.available_players())
+    ranked = rank_board(state, strategy, settings, enriched_board(adapter, key))
     if not ranked:
         console.print("[yellow]No eligible players.[/yellow] "
                       "Constraints may be too tight, or the draft is over.")
         return 1
 
     console.print(f"[bold]{ref.key}[/bold] round {state.round}, pick {state.pick}")
-    table = Table("#", "Player", "Pos", "Team", "Score")
+    table = Table("#", "Player", "Pos", "Team", "ADP", "Score")
     for index, (player, points) in enumerate(ranked[:limit], start=1):
-        table.add_row(str(index), player.name, player.position,
-                      player.team or "-", f"{points:.1f}")
+        table.add_row(str(index), player.name, player.position, player.team or "-",
+                      f"{player.adp:.0f}" if player.adp else "-", f"{points:.1f}")
     console.print(table)
     return 0
 
@@ -121,15 +156,16 @@ def cmd_queue(registry: LeagueRegistry, key: str, limit: int, out: Path | None) 
     settings = load_settings(key)
 
     state = DraftState(round=1, pick=settings.draft_slot or 1)
-    ranked = rank_board(state, strategy, settings, adapter.available_players())
+    ranked = rank_board(state, strategy, settings, enriched_board(adapter, key))
 
     destination = out or Path(f"data/queue_{key}.csv")
     destination.parent.mkdir(parents=True, exist_ok=True)
     with destination.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["rank", "player", "position", "team"])
+        writer.writerow(["rank", "player", "position", "team", "adp"])
         for index, (player, _) in enumerate(ranked[:limit], start=1):
-            writer.writerow([index, player.name, player.position, player.team or ""])
+            writer.writerow([index, player.name, player.position, player.team or "",
+                             player.adp or ""])
     console.print(f"[green]Wrote {min(limit, len(ranked))} players to {destination}[/green]")
     return 0
 
@@ -143,6 +179,13 @@ def main() -> int:
 
     sync = sub.add_parser("sync", help="Pull roster and scoring rules from platforms.")
     sync.add_argument("--league", default=None)
+
+    rankings = sub.add_parser("rankings", help="Pull player values for a league.")
+    rankings.add_argument("--league", required=True)
+    rankings.add_argument(
+        "--csv", type=Path, default=None,
+        help="Read a rankings CSV export instead of calling the FantasyPros API.",
+    )
 
     show = sub.add_parser("show", help="Print a league's strategy, round by round.")
     show.add_argument("--league", required=True)
@@ -168,6 +211,8 @@ def main() -> int:
         return cmd_leagues(registry)
     if args.command == "sync":
         return cmd_sync(registry, args.league)
+    if args.command == "rankings":
+        return cmd_rankings(registry, args.league, args.csv)
     if args.command == "show":
         return cmd_show(registry, args.league)
     if args.command == "board":

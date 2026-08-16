@@ -106,6 +106,18 @@ uv run draftbot leagues
 uv run draftbot sync
 ```
 
+Pull player values (needs `FANTASYPROS_API_KEY`):
+
+```bash
+uv run draftbot rankings --league home
+```
+
+No API key? Export rankings from FantasyPros as CSV and read that instead:
+
+```bash
+uv run draftbot rankings --league home --csv ~/Downloads/FantasyPros_Rankings.csv
+```
+
 ```bash
 uv run draftbot show --league home
 ```
@@ -121,22 +133,30 @@ uv run draftbot queue --league home
 ## Status
 
 **Working:** multi-league registry, normalized settings model across platforms,
-roster/flex logic including superflex and TE-premium, the ranking engine, the
-Sleeper adapter (verified live against the API), queue export, 21 tests.
+roster/flex logic including superflex and TE-premium, the ranking engine,
+FantasyPros rankings via API or CSV export, name matching (verified against the
+live Sleeper player list), the Sleeper adapter, queue export, 36 tests.
 
 **Not built yet:**
 
 - **ESPN and Yahoo adapters.** The protocol is defined and Sleeper implements it.
   ESPN needs `espn_s2`/`SWID` cookies for private leagues; Yahoo needs a
   registered OAuth app.
-- **ADP and projections.** Sleeper's player endpoint carries neither, so the
-  engine's `reach_tolerance` has nothing to bite on yet and rankings fall back to
-  raw value. This is the biggest gap — an ADP source is needed before the queue
-  export is genuinely useful.
+- **Real projections.** The FantasyPros consensus endpoint gives expert rank,
+  which stands in for ADP. Actual point projections are a separate endpoint and
+  aren't wired up, so `value_of` still ranks by ADP rather than projected points.
 - **Strategy/format conflict warnings.** Nothing yet catches a strategy that
   gates QB until round 6 being pointed at a superflex league, where that's a bad
   idea.
 - **Auction and keeper/dynasty formats.** The engine assumes a snake draft.
+
+### A note on name matching
+
+Ranking sites and platforms disagree about names constantly — suffixes, periods,
+apostrophes, and defenses especially. [matching.py](src/nfl_fantasy/matching.py)
+normalizes both sides, and unmatched players are reported rather than silently
+dropped, because a quietly shrinking board is the worst possible failure here.
+Defenses match on team code, not name.
 
 ## Tests
 
