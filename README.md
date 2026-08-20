@@ -3,6 +3,8 @@
 Drafts your fantasy football rosters according to a strategy you write — across
 several leagues on Sleeper, ESPN, and Yahoo at once.
 
+Picking this up on another machine? Start with [HANDOFF.md](HANDOFF.md).
+
 Your edge is the strategy, not the clicking. You describe how you want to draft
 — which positions to gate off until later rounds, what to prioritize each round,
 how far you'll reach off ADP — and the bot applies it consistently in every
