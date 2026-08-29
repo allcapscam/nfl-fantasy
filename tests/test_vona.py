@@ -1,5 +1,7 @@
 """VONA: opportunity cost, positional runs, and the snake maths."""
 
+from collections import Counter
+
 from nfl_fantasy.platforms.base import Player
 from nfl_fantasy.settings import LeagueSettings
 from nfl_fantasy.valuation import Valuation
@@ -7,12 +9,15 @@ from nfl_fantasy.vona import (
     blend_runs,
     interpolate,
     missing_required,
+    need_weight,
     next_pick_after,
     opportunity_costs,
     roster_cap,
     runs_from_adp,
-    runs_observed,
+    runs_from_needs,
     snake_picks,
+    team_at_pick,
+    team_needs,
 )
 
 LEAGUE = LeagueSettings(
@@ -125,21 +130,55 @@ def test_runs_from_adp_counts_the_window():
     assert runs["QB"] == 0.0
 
 
-def test_runs_observed_scales_to_the_gap():
-    recent = ["RB", "RB", "WR", "RB"]  # 3 of 4 picks were backs
-    runs = runs_observed(recent, gap=8)
-    assert runs["RB"] == 6.0
-    assert runs["WR"] == 2.0
+def test_team_at_pick_follows_the_snake():
+    assert [team_at_pick(p, 10) for p in range(1, 11)] == list(range(1, 11))
+    # Round two runs backwards.
+    assert [team_at_pick(p, 10) for p in range(11, 21)] == list(range(10, 0, -1))
 
 
-def test_blend_moves_from_adp_toward_the_room():
-    prior = {p: 0.0 for p in ("QB", "RB", "WR", "TE", "K", "DST")} | {"RB": 2.0}
-    observed = {p: 0.0 for p in ("QB", "RB", "WR", "TE", "K", "DST")} | {"RB": 6.0}
+def test_team_needs_shrink_as_slots_fill():
+    empty = team_needs(LEAGUE, Counter())
+    assert empty["RB"] == 2 and empty["WR"] == 2 and empty["QB"] == 1
 
-    assert blend_runs(prior, observed, picks_seen=0)["RB"] == 2.0
-    early = blend_runs(prior, observed, picks_seen=6)["RB"]
-    late = blend_runs(prior, observed, picks_seen=60)["RB"]
-    assert 2.0 < early < late <= 4.0  # never fully abandons the prior
+    stocked = team_needs(LEAGUE, Counter({"RB": 2, "WR": 2, "TE": 1, "QB": 1}))
+    assert stocked["QB"] == 0
+    # Dedicated slots are full, so what is left is flex appetite, not RB need.
+    assert stocked["RB"] < empty["RB"]
+
+
+def test_a_room_full_of_backs_stops_wanting_backs():
+    """Cam's case: if everyone already drafted their backs, the run is spent.
+
+    A momentum model gets this exactly backwards -- it sees a run on backs and
+    predicts more of them, when in fact the demand has been consumed.
+    """
+    # Two full rounds where every team took a running back.
+    all_backs = ["RB"] * 20
+    # Same two rounds, but the room spread its picks around.
+    mixed = ["WR", "TE", "QB", "WR", "TE"] * 4
+
+    window = (21, 30)
+    backs_room = runs_from_needs(LEAGUE, all_backs, *window, my_slot=5)
+    mixed_room = runs_from_needs(LEAGUE, mixed, *window, my_slot=5)
+
+    assert backs_room["RB"] < mixed_room["RB"]
+    # And with their backs full, those teams now want receivers.
+    assert backs_room["WR"] > backs_room["RB"]
+
+
+def test_need_weight_grows_through_the_draft():
+    assert need_weight(1) == 0.0          # round one is best-available
+    assert 0 < need_weight(5) < need_weight(9)
+    assert need_weight(9) == need_weight(15)  # capped once need dominates
+
+
+def test_blend_hands_over_from_adp_to_need():
+    prior = dict.fromkeys(("QB", "RB", "WR", "TE", "K", "DST"), 0.0) | {"RB": 4.0}
+    needs = dict.fromkeys(("QB", "RB", "WR", "TE", "K", "DST"), 0.0) | {"RB": 0.0}
+
+    assert blend_runs(prior, needs, round_number=1)["RB"] == 4.0
+    late = blend_runs(prior, needs, round_number=12)["RB"]
+    assert late < 1.0  # need model has taken over and says the run is over
 
 
 # -- the safety net for letting VONA handle K and DST ------------------------

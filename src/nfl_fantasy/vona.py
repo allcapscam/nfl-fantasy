@@ -21,9 +21,10 @@ on positions far harder than ADP implies.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 
-from nfl_fantasy.settings import LeagueSettings
+from nfl_fantasy.settings import FLEX_SLOTS, LeagueSettings
 from nfl_fantasy.valuation import Valuation
 
 POSITIONS = ("QB", "RB", "WR", "TE", "K", "DST")
@@ -38,6 +39,84 @@ def snake_picks(slot: int, teams: int, rounds: int) -> list[int]:
         else:
             picks.append((rnd - 1) * teams + (teams - slot + 1))
     return picks
+
+
+def team_at_pick(overall: int, teams: int) -> int:
+    """Which draft slot owns a given overall pick, accounting for the snake."""
+    index = (overall - 1) % teams
+    round_number = (overall - 1) // teams + 1
+    return index + 1 if round_number % 2 == 1 else teams - index
+
+
+def rosters_from_picks(positions: list[str], teams: int) -> dict[int, Counter]:
+    """Reconstruct every team's roster from the picks made so far.
+
+    `positions` is the position of each pick in draft order, so its index is
+    the overall pick number.
+    """
+    rosters: dict[int, Counter] = {slot: Counter() for slot in range(1, teams + 1)}
+    for index, position in enumerate(positions, start=1):
+        rosters[team_at_pick(index, teams)][position] += 1
+    return rosters
+
+
+def team_needs(settings: LeagueSettings, roster: Counter) -> dict[str, float]:
+    """Starting slots this team still has to fill, by position.
+
+    Flex demand is spread over the positions that can fill it, so a team with
+    its dedicated RB and WR slots full still carries some appetite for both.
+    """
+    needs: dict[str, float] = {}
+    for position in POSITIONS:
+        required = settings.starters_at(position)
+        needs[position] = max(0.0, required - roster.get(position, 0))
+
+    flex_slots = sum(1 for slot in settings.starting_slots if slot in FLEX_SLOTS)
+    if flex_slots:
+        dedicated_filled = all(
+            roster.get(p, 0) >= settings.starters_at(p) for p in ("RB", "WR", "TE")
+        )
+        flex_used = max(
+            0,
+            sum(roster.get(p, 0) - settings.starters_at(p) for p in ("RB", "WR", "TE")),
+        )
+        remaining_flex = max(0.0, flex_slots - flex_used)
+        if remaining_flex and dedicated_filled:
+            for position in ("RB", "WR"):
+                needs[position] += remaining_flex / 2
+    return needs
+
+
+def runs_from_needs(
+    settings: LeagueSettings,
+    positions_taken: list[str],
+    start: int,
+    end: int,
+    my_slot: int,
+) -> dict[str, float]:
+    """Expected positional runs from what the teams picking next actually need.
+
+    This is the correction to a momentum model. If every team has already
+    filled its running back slots, another run on backs is *less* likely, not
+    more -- demand is spent. Each opposing pick in the window is spread across
+    that team's unfilled slots.
+    """
+    runs = dict.fromkeys(POSITIONS, 0.0)
+    rosters = rosters_from_picks(positions_taken, settings.teams)
+
+    for overall in range(start + 1, end + 1):
+        slot = team_at_pick(overall, settings.teams)
+        if slot == my_slot:
+            continue
+        needs = team_needs(settings, rosters[slot])
+        total = sum(needs.values())
+        if total <= 0:
+            # Starting lineup complete: this team drafts depth, which follows
+            # value rather than need. The ADP prior covers that case.
+            continue
+        for position, need in needs.items():
+            runs[position] += need / total
+    return runs
 
 
 def next_pick_after(current: int, slot: int, teams: int, rounds: int) -> int | None:
@@ -76,31 +155,30 @@ def runs_from_adp(
     return runs
 
 
-def runs_observed(recent: list[str], gap: int) -> dict[str, float]:
-    """Positional rate in the picks already made, scaled to a gap this size."""
-    runs = dict.fromkeys(POSITIONS, 0.0)
-    if not recent:
-        return runs
-    for position in recent:
-        if position in runs:
-            runs[position] += 1.0
-    scale = gap / len(recent)
-    return {position: count * scale for position, count in runs.items()}
+#: Round by which drafting for need dominates drafting best-available. Nobody
+#: drafts for need in round one; by the middle rounds almost everyone does.
+NEED_DRIVEN_BY_ROUND = 9.0
+MAX_NEED_WEIGHT = 0.8
+
+
+def need_weight(round_number: int) -> float:
+    """How much to trust roster need over ADP at this stage of the draft."""
+    progress = max(0.0, round_number - 1) / (NEED_DRIVEN_BY_ROUND - 1)
+    return min(MAX_NEED_WEIGHT, progress * MAX_NEED_WEIGHT)
 
 
 def blend_runs(
-    prior: dict[str, float], observed: dict[str, float], picks_seen: int, weight_at: int = 30
+    prior: dict[str, float], needs: dict[str, float], round_number: int
 ) -> dict[str, float]:
-    """Move from the ADP prior toward the live room as evidence accumulates.
+    """Combine the ADP prior with what the teams picking next still need.
 
-    Early on, a handful of picks is noise and ADP is the better guide. By about
-    `weight_at` picks the room has shown its hand and deserves equal weight.
+    Early rounds are best-player-available, so ADP carries it. Later, rosters
+    are half full and picks are driven by holes, so the need model takes over.
     """
-    if picks_seen <= 0:
-        return dict(prior)
-    live = min(1.0, picks_seen / weight_at) * 0.5
+    weight = need_weight(round_number)
     return {
-        position: prior.get(position, 0.0) * (1 - live) + observed.get(position, 0.0) * live
+        position: prior.get(position, 0.0) * (1 - weight)
+        + needs.get(position, 0.0) * weight
         for position in POSITIONS
     }
 

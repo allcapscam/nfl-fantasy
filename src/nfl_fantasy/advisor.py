@@ -21,7 +21,7 @@ from nfl_fantasy.vona import (
     next_pick_after,
     opportunity_costs,
     runs_from_adp,
-    runs_observed,
+    runs_from_needs,
     snake_picks,
 )
 
@@ -106,16 +106,22 @@ def advise(
     following = next_pick_after(current, slot, settings.teams, rounds)
     round_number = (current - 1) // settings.teams + 1
 
-    # The prior: where ADP says the run falls. The evidence: what this room has
-    # actually been doing. Early on the prior carries it; later the room does.
-    gap = (following - current) if following else 0
+    # Two views of who goes next. ADP says where the market drafts a position;
+    # roster need says which teams still have that hole to fill. Early rounds
+    # are best-available so ADP leads; later, need does.
     adp = {v.player.name: v.player.adp for v in board if v.player.adp is not None}
     positions = {v.player.name: v.player.position for v in board}
     prior = runs_from_adp(adp, positions, current, following or current)
 
-    recent_positions = [by_key[k].player.position for k in gone if k in by_key]
-    observed = runs_observed(recent_positions[-20:], gap)
-    runs = blend_runs(prior, observed, picks_seen=len(gone))
+    taken_positions = [
+        by_key[normalize(name)].player.position
+        for name in taken
+        if normalize(name) in by_key
+    ]
+    needs = runs_from_needs(
+        settings, taken_positions, current, following or current, slot
+    )
+    runs = blend_runs(prior, needs, round_number)
 
     opportunities = opportunity_costs(available, runs, settings, roster_counts)
     if not opportunities and available:

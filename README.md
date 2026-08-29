@@ -145,7 +145,7 @@ uv run draftbot queue --league home
 roster/flex logic including superflex and TE-premium, the ranking engine,
 FantasyPros rankings and projections via API or CSV export, name matching
 (100% on the draftable range against a live Sleeper league), the Sleeper
-adapter, the Yahoo adapter and OAuth flow, roster-valid queue export, the VONA advisor, 86 tests.
+adapter, the Yahoo adapter and OAuth flow, roster-valid queue export, the VONA advisor, 89 tests.
 
 ### The VONA advisor
 
@@ -167,8 +167,12 @@ The pick itself maximises the two-pick total. Over your current turn and your
 next, taking a back gives `RB1 + E[best WR later]` and taking a receiver gives
 `WR1 + E[best RB later]`, so the back wins exactly when its drop is larger.
 Choosing the biggest drop *is* the optimum, not a heuristic. How many of each
-position will go is estimated from ADP before the draft and blended toward the
-room's actual behaviour as picks accumulate.
+position will go is estimated two ways and blended. ADP says where the market
+drafts a position; a roster model says which teams picking next still have that
+hole. The second matters because demand gets *consumed*: if every team already
+has its backs, another run on backs is less likely, not more. A momentum model
+gets that exactly backwards. ADP leads in the early rounds, where picks are
+best-player-available, and roster need takes over by the middle rounds.
 
 Kickers and defenses are not gated. Their spread above replacement is so small
 that the maths pushes them to the last rounds on its own; a warning fires if a
