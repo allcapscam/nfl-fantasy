@@ -14,8 +14,10 @@ from rich.table import Table
 from nfl_fantasy.draft import rank_board, rank_queue
 from nfl_fantasy.leagues import LeagueRef, LeagueRegistry
 from nfl_fantasy.matching import apply_rankings
+from nfl_fantasy.platforms import yahoo_auth
 from nfl_fantasy.platforms.base import Player
 from nfl_fantasy.platforms.sleeper import SleeperAdapter
+from nfl_fantasy.platforms.yahoo import YahooAdapter
 from nfl_fantasy.sources.csv_source import CsvRankingSource
 from nfl_fantasy.sources.fantasypros import FantasyProsSource
 from nfl_fantasy.store import load_rankings, load_settings, save_rankings, save_settings
@@ -34,10 +36,30 @@ def build_adapter(ref: LeagueRef):
             draft_id=ref.draft_id,
             user_id=os.environ.get("SLEEPER_USER_ID"),
         )
+    if ref.platform == "yahoo":
+        return YahooAdapter(key=ref.key, league_id=ref.league_id)
     raise NotImplementedError(
-        f"No adapter for {ref.platform!r} yet. Sleeper is implemented; "
-        "ESPN and Yahoo are next."
+        f"No adapter for {ref.platform!r} yet. Sleeper and Yahoo are "
+        "implemented; ESPN is next."
     )
+
+
+def cmd_auth_yahoo() -> int:
+    """Walk the user through Yahoo's out-of-band authorization once."""
+    client_id, _ = yahoo_auth.credentials()
+    console.print("\n1. Open this URL and approve access:\n")
+    console.print(f"   [cyan]{yahoo_auth.authorize_url(client_id)}[/cyan]\n")
+    console.print("2. Yahoo shows you a code. Paste it below.\n")
+    code = input("   Code: ").strip()
+    if not code:
+        console.print("[red]No code entered.[/red]")
+        return 1
+
+    token = yahoo_auth.exchange_code(code)
+    path = token.save()
+    console.print(f"[green]Authorized.[/green] Token saved to {path} "
+                  "(gitignored, refreshes automatically).")
+    return 0
 
 
 def cmd_leagues(registry: LeagueRegistry) -> int:
@@ -195,6 +217,9 @@ def main() -> int:
 
     sub.add_parser("leagues", help="List configured leagues.")
 
+    auth = sub.add_parser("auth", help="Authorize a platform that needs OAuth.")
+    auth.add_argument("platform", choices=["yahoo"])
+
     sync = sub.add_parser("sync", help="Pull roster and scoring rules from platforms.")
     sync.add_argument("--league", default=None)
 
@@ -220,6 +245,13 @@ def main() -> int:
     queue.add_argument("--out", type=Path, default=None)
 
     args = parser.parse_args()
+
+    if args.command == "auth" and args.platform == "yahoo":
+        try:
+            return cmd_auth_yahoo()
+        except RuntimeError as error:
+            console.print(f"[red]{error}[/red]")
+            return 1
 
     if not args.registry.exists():
         console.print(f"[red]No league registry at {args.registry}.[/red] "

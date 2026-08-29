@@ -108,6 +108,12 @@ uv run draftbot leagues
 uv run draftbot sync
 ```
 
+Yahoo needs authorizing once (see `.env.example` for app registration):
+
+```bash
+uv run draftbot auth yahoo
+```
+
 Pull player values (needs `FANTASYPROS_API_KEY` in `.env`):
 
 ```bash
@@ -139,7 +145,7 @@ uv run draftbot queue --league home
 roster/flex logic including superflex and TE-premium, the ranking engine,
 FantasyPros rankings and projections via API or CSV export, name matching
 (100% on the draftable range against a live Sleeper league), the Sleeper
-adapter, roster-valid queue export, 46 tests.
+adapter, the Yahoo adapter and OAuth flow, roster-valid queue export, 60 tests.
 
 ### How the queue differs from the board
 
@@ -159,9 +165,11 @@ platform's autodraft consumes top-down. They are not the same ranking:
 
 **Not built yet:**
 
-- **ESPN and Yahoo adapters.** The protocol is defined and Sleeper implements it.
-  ESPN needs `espn_s2`/`SWID` cookies for private leagues; Yahoo needs a
-  registered OAuth app.
+- **ESPN adapter.** The protocol is defined; Sleeper and Yahoo implement it.
+  ESPN needs `espn_s2`/`SWID` cookies for private leagues.
+- **Yahoo against the live API.** The adapter and OAuth flow are written and
+  covered by fixture tests, but have not yet run against Yahoo with real
+  credentials.
 - **Strategy/format conflict warnings.** Nothing yet catches a strategy that
   gates QB until round 6 being pointed at a superflex league, where that's a bad
   idea.

@@ -3,7 +3,7 @@
 Pick-up notes for continuing this project on another machine. Written 2026-08-20.
 
 **Repo:** https://github.com/allcapscam/nfl-fantasy (public)
-**State:** commit `fde0083`, clean, pushed. 46 tests passing, ruff clean.
+**State:** clean and pushed. 60 tests passing, ruff clean.
 
 ---
 
@@ -110,7 +110,17 @@ Each cost real debugging. All are guarded in code with regression tests.
    while a prefer bonus was 15%, so soft preferences outranked value by ~100
    places. Now halves every 30 ranks (`RANK_HALF_LIFE`).
 
-5. **The queue is not the board.** It skips the reach limit (a per-pick idea),
+5. **Yahoo's league key is not the number in the URL.** It is
+   `{game_key}.l.{league_id}` and the game key changes every season. The adapter
+   discovers it via `users;use_login=1/games;game_keys=nfl/leagues` (`nfl` is an
+   alias for the current season) and matches on the id in `leagues.yaml`. Don't
+   hardcode a game key.
+
+6. **Yahoo scoring is read by stat name, not stat id.** The numeric ids are
+   undocumented, and a wrong one would silently mis-score a whole league. The
+   adapter pulls `game/nfl/stat_categories` and matches on "Receptions".
+
+7. **The queue is not the board.** It skips the reach limit (a per-pick idea),
    demotes gated players rather than dropping them (else you lose the TE1
    forever), and promotes required starters into the draft — consensus ranks put
    the first kicker past the last pick, which would end the draft with an empty
@@ -134,9 +144,7 @@ TE premium), snake, 16 rounds, 90s picks, roster `QB RB RB WR WR TE FLEX K DST`
 ### Not built
 
 - **ESPN adapter** — needs `espn_s2` + `SWID` cookies from
-  a logged-in browser session. Easier of the two remaining.
-- **Yahoo adapter** (two leagues) — needs an OAuth app registered at
-  developer.yahoo.com for client id + secret.
+  a logged-in browser session. The last platform left.
 - **Strategy/format conflict warnings** — nothing catches a strategy gating QB
   until round 6 pointed at a superflex league.
 - **Auction and keeper/dynasty formats** — the engine assumes a snake draft.
