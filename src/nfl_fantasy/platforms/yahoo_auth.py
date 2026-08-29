@@ -18,14 +18,20 @@ import base64
 import os
 import time
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 from pydantic import BaseModel
 
 AUTHORIZE_URL = "https://api.login.yahoo.com/oauth2/request_auth"
 TOKEN_URL = "https://api.login.yahoo.com/oauth2/get_token"
-REDIRECT_URI = "oob"
+
+#: Yahoo's app form has changed over time. "oob" (out of band) shows the code on
+#: screen and is what makes this usable from a terminal, but newer app types may
+#: insist on a real https URI. Set YAHOO_REDIRECT_URI to whatever the form
+#: accepted -- nothing needs to listen on it, since the code can be pasted from
+#: the address bar.
+DEFAULT_REDIRECT_URI = "oob"
 
 TOKEN_PATH = Path("data/yahoo_token.json")
 
@@ -80,12 +86,37 @@ def credentials() -> tuple[str, str]:
     return client_id, client_secret
 
 
+def redirect_uri() -> str:
+    """Must match the value registered on the Yahoo app exactly."""
+    return os.environ.get("YAHOO_REDIRECT_URI") or DEFAULT_REDIRECT_URI
+
+
 def authorize_url(client_id: str) -> str:
     """Where the user goes to approve access."""
     query = urlencode(
-        {"client_id": client_id, "redirect_uri": REDIRECT_URI, "response_type": "code"}
+        {
+            "client_id": client_id,
+            "redirect_uri": redirect_uri(),
+            "response_type": "code",
+        }
     )
     return f"{AUTHORIZE_URL}?{query}"
+
+
+def extract_code(pasted: str) -> str:
+    """Pull the authorization code out of whatever the user pasted.
+
+    With an `oob` redirect Yahoo prints a bare code. With an https redirect it
+    sends the browser to `...?code=XYZ&state=...` and the page may well fail to
+    load -- the code is still in the address bar, so accept a full URL too.
+    """
+    text = pasted.strip()
+    if "code=" in text:
+        query = parse_qs(urlparse(text).query if "://" in text else text)
+        codes = query.get("code") or []
+        if codes:
+            return codes[0].strip()
+    return text
 
 
 def _basic_auth_header(client_id: str, client_secret: str) -> str:
@@ -98,7 +129,7 @@ def _post_token(data: dict, client: httpx.Client | None = None) -> dict:
     http = client or httpx.Client(timeout=30.0)
     response = http.post(
         TOKEN_URL,
-        data={**data, "redirect_uri": REDIRECT_URI},
+        data={**data, "redirect_uri": redirect_uri()},
         headers={
             "Authorization": _basic_auth_header(client_id, client_secret),
             "Content-Type": "application/x-www-form-urlencoded",
@@ -114,7 +145,7 @@ def _post_token(data: dict, client: httpx.Client | None = None) -> dict:
 def exchange_code(code: str, client: httpx.Client | None = None) -> YahooToken:
     """Trade the pasted authorization code for tokens."""
     payload = _post_token(
-        {"grant_type": "authorization_code", "code": code.strip()}, client
+        {"grant_type": "authorization_code", "code": extract_code(code)}, client
     )
     return YahooToken.from_response(payload)
 

@@ -145,7 +145,7 @@ uv run draftbot queue --league home
 roster/flex logic including superflex and TE-premium, the ranking engine,
 FantasyPros rankings and projections via API or CSV export, name matching
 (100% on the draftable range against a live Sleeper league), the Sleeper
-adapter, the Yahoo adapter and OAuth flow, roster-valid queue export, 60 tests.
+adapter, the Yahoo adapter and OAuth flow, roster-valid queue export, 61 tests.
 
 ### How the queue differs from the board
 
@@ -157,6 +157,13 @@ platform's autodraft consumes top-down. They are not the same ranking:
 - **Round gates demote rather than drop.** A TE gated until round 3 who ranks in
   round 2 stays in the queue, moved to round 3 — otherwise you'd never take the
   TE1 even if he fell to you.
+- **The roster fills as the queue is consumed.** Entries are chosen greedily
+  against a roster that grows one player per `teams` slots, which is roughly how
+  often an autodraft reaches your queue. Scoring everyone against an empty
+  roster instead made a superflex and a single-QB league produce identical
+  queues. Note the effect is proportional: superflex visibly pulls QBs up, while
+  a two- versus three-receiver league is too small a difference to move the top
+  192.
 - **Required starters are guaranteed.** Consensus rankings put the first kicker
   below the last pick of the draft, because a kicker is nearly worthless per
   rank. But a roster with a K slot must fill it, so positions with dedicated
@@ -168,8 +175,12 @@ platform's autodraft consumes top-down. They are not the same ranking:
 - **ESPN adapter.** The protocol is defined; Sleeper and Yahoo implement it.
   ESPN needs `espn_s2`/`SWID` cookies for private leagues.
 - **Yahoo against the live API.** The adapter and OAuth flow are written and
-  covered by fixture tests, but have not yet run against Yahoo with real
-  credentials.
+  covered by fixture tests, but have not yet run against Yahoo. Yahoo now gates
+  Fantasy API access behind a manual review at
+  https://sports.yahoo.com/developer/access/, so this is blocked on approval
+  rather than on code. In the meantime a league can carry hand-entered `manual`
+  settings in `leagues.yaml` and still export a queue -- see
+  `leagues.example.yaml`.
 - **Strategy/format conflict warnings.** Nothing yet catches a strategy that
   gates QB until round 6 being pointed at a superflex league, where that's a bad
   idea.

@@ -9,11 +9,42 @@ pulled from the platform by `draftbot sync`, so they can't drift out of date.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field
 
-from nfl_fantasy.settings import Platform
+from nfl_fantasy.settings import LeagueSettings, Platform, Scoring
+
+
+class ManualSettings(BaseModel):
+    """League rules typed by hand, for when the platform can't be read.
+
+    Syncing from the platform is always preferred -- it can't drift. But Yahoo
+    gates its API behind manual approval and ESPN has no adapter yet, and a
+    queue only really needs the roster shape and the scoring format. This lets
+    those leagues work in the meantime.
+    """
+
+    teams: int = 12
+    roster: list[str] = Field(
+        description="Starting and bench slots, e.g. [QB, RB, RB, WR, WR, TE, FLEX, K, DST, BN, BN]"
+    )
+    scoring: Literal["standard", "half_ppr", "ppr"] = "half_ppr"
+    te_premium: float = Field(0.0, description="Bonus points per TE reception.")
+    name: str = ""
+
+    def to_settings(self, key: str, platform: Platform, league_id: str) -> LeagueSettings:
+        reception = {"standard": 0.0, "half_ppr": 0.5, "ppr": 1.0}[self.scoring]
+        return LeagueSettings(
+            key=key,
+            platform=platform,
+            league_id=league_id,
+            name=self.name,
+            teams=self.teams,
+            roster_slots=[slot.strip().upper() for slot in self.roster],
+            scoring=Scoring(reception=reception, te_reception_bonus=self.te_premium),
+        )
 
 
 class LeagueRef(BaseModel):
@@ -27,6 +58,9 @@ class LeagueRef(BaseModel):
     )
     strategy: Path = Field(description="Path to this league's strategy YAML.")
     enabled: bool = True
+    manual: ManualSettings | None = Field(
+        None, description="Hand-entered rules used when the platform can't be read."
+    )
 
 
 class LeagueRegistry(BaseModel):

@@ -29,3 +29,21 @@ leagues:
     league_id: "REPLACE_ME"
     strategy: strategies/hero-rb.yaml
     enabled: false
+
+# When a platform can't be read -- Yahoo's API needs manual approval, ESPN has
+# no adapter yet -- you can enter the league's rules by hand. `sync` prefers the
+# platform and only falls back to this, so a readable league never drifts.
+#
+# A queue only needs the roster shape and the scoring format, so a league with
+# manual settings can still export one.
+#
+#  money:
+#    platform: yahoo
+#    league_id: "REPLACE_ME"
+#    strategy: strategies/balanced.yaml
+#    manual:
+#      teams: 12
+#      scoring: half_ppr        # standard | half_ppr | ppr
+#      te_premium: 0.0          # bonus points per TE reception
+#      roster: [QB, RB, RB, WR, WR, WR, TE, FLEX, K, DST,
+#               BN, BN, BN, BN, BN, BN]

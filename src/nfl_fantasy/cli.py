@@ -78,14 +78,24 @@ def cmd_sync(registry: LeagueRegistry, only: str | None) -> int:
     refs = [registry.get(only)] if only else registry.active
     failures = 0
     for ref in refs:
+        source = "synced"
         try:
             settings = build_adapter(ref).fetch_settings()
         except Exception as error:  # noqa: BLE001 - report and continue to the next league
-            console.print(f"[red]{ref.key}:[/red] {error}")
-            failures += 1
-            continue
+            # Hand-entered rules are the fallback, not the default: a league
+            # that can be read from its platform can never drift out of date.
+            if ref.manual is None:
+                console.print(f"[red]{ref.key}:[/red] {error}")
+                failures += 1
+                continue
+            settings = ref.manual.to_settings(ref.key, ref.platform, ref.league_id)
+            source = "manual"
+            console.print(f"[yellow]{ref.key}:[/yellow] platform unavailable "
+                          f"({str(error).splitlines()[0]}) -- using manual settings")
+
         save_settings(settings)
-        console.print(f"[green]{ref.key}:[/green] {settings.describe()} "
+        colour = "green" if source == "synced" else "yellow"
+        console.print(f"[{colour}]{ref.key}:[/{colour}] {settings.describe()} "
                       f"-- {' '.join(settings.starting_slots)}")
     return 1 if failures else 0
 
@@ -134,6 +144,35 @@ def enriched_board(adapter, key: str, include_unranked: bool = False) -> list[Pl
     console.print(f"[dim]{len(ranked)} ranked players on the board "
                   f"({len(unranked)} unranked hidden; --include-unranked to keep)[/dim]")
     return ranked
+
+
+def board_from_rankings(key: str) -> list[Player]:
+    """A player pool built from the rankings alone, with no platform involved.
+
+    Good enough for a queue, which is just names in preference order. Not good
+    enough for a live board, which has to know who has already been taken.
+    """
+    rankings = load_rankings(key)
+    if not rankings:
+        console.print(f"[red]No rankings cached for {key}.[/red] "
+                      f"Run: draftbot rankings --league {key} --csv <export.csv>")
+        return []
+
+    console.print(f"[dim]Building the pool from {len(rankings)} cached rankings "
+                  "instead of the platform.[/dim]")
+    return [
+        Player(
+            id=f"rank:{index}",
+            name=ranking.name,
+            position=ranking.position,
+            team=ranking.team,
+            adp=ranking.adp,
+            projected_points=ranking.projected_points,
+            bye_week=ranking.bye_week,
+        )
+        for index, ranking in enumerate(rankings)
+        if ranking.position in {"QB", "RB", "WR", "TE", "K", "DST"}
+    ]
 
 
 def cmd_show(registry: LeagueRegistry, key: str) -> int:
@@ -191,11 +230,23 @@ def cmd_board(
 def cmd_queue(registry: LeagueRegistry, key: str, limit: int, out: Path | None) -> int:
     """Export a ranked list to load into the platform's own autodraft queue."""
     ref = registry.get(key)
-    adapter = build_adapter(ref)
     strategy = Strategy.load(ref.strategy)
     settings = load_settings(key)
 
-    ranked = rank_queue(strategy, settings, enriched_board(adapter, key))
+    # A queue is a preference list of names, so it does not actually need the
+    # platform -- only the roster shape and the rankings. When the platform
+    # can't be read (Yahoo pending API approval, ESPN not implemented), fall
+    # back to building the pool from the rankings themselves.
+    try:
+        board = enriched_board(build_adapter(ref), key)
+    except (NotImplementedError, RuntimeError) as error:
+        console.print(f"[yellow]{ref.key}: platform unavailable[/yellow] "
+                      f"({str(error).splitlines()[0]})")
+        board = board_from_rankings(key)
+        if not board:
+            return 1
+
+    ranked = rank_queue(strategy, settings, board)
 
     destination = out or Path(f"data/queue_{key}.csv")
     destination.parent.mkdir(parents=True, exist_ok=True)

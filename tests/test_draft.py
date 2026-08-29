@@ -202,3 +202,31 @@ def test_rank_board_is_sorted_and_filtered():
     scores = [score for _, score in ranked]
     assert scores == sorted(scores, reverse=True)
     assert all(p.position not in {"QB", "K"} for p, _ in ranked)  # both gated in round 1
+
+
+def test_queue_responds_to_roster_shape():
+    """Regression: the queue once scored everyone against an empty roster.
+
+    That made a superflex league and a single-QB league produce byte-identical
+    queues, which defeats the point of syncing roster rules per league.
+    """
+    board = []
+    for rank in range(1, 121):
+        position = "QB" if rank % 4 == 0 else "WR"
+        board.append(
+            Player(id=f"p{rank}", name=f"P{rank}", position=position, adp=float(rank))
+        )
+
+    single_qb = LeagueSettings(
+        key="one", platform="sleeper", league_id="1", teams=12,
+        roster_slots=["QB", "WR", "WR", "FLEX"] + ["BN"] * 6,
+    )
+    superflex = single_qb.model_copy(
+        update={"roster_slots": ["QB", "WR", "WR", "SUPER_FLEX"] + ["BN"] * 6}
+    )
+
+    def first_qb_slot(settings):
+        ordered = rank_queue(Strategy(), settings, board)
+        return next(i for i, (p, _) in enumerate(ordered) if p.position == "QB")
+
+    assert first_qb_slot(superflex) < first_qb_slot(single_qb)

@@ -127,14 +127,25 @@ def rank_queue(
 ) -> list[tuple[Player, float]]:
     """A static preference list for the platform's own autodraft.
 
-    Different from `rank_board` in two ways, both because a queue is not a
-    single pick. The reach limit is skipped -- it asks "is this too early *for
-    this pick*", which is meaningless in a list covering every pick. And round
-    gates are applied against the round a player is expected to go in, so a
-    kicker gated until round 14 is dropped if he ranks inside round 3 but kept
-    if he ranks where a round-15 pick would land.
+    Different from `rank_board` in three ways, all because a queue is not a
+    single pick.
+
+    The reach limit is skipped -- it asks "is this too early *for this pick*",
+    which is meaningless in a list covering every pick.
+
+    Round gates apply against the round a player is expected to go in, so a
+    kicker gated until round 14 is demoted rather than dropped.
+
+    And the list is built greedily against a roster that fills up as the queue
+    is consumed, rather than scored once against an empty roster. Without that
+    the roster shape had no effect at all: a three-receiver league and a
+    two-receiver league produced byte-identical queues, which defeats the point
+    of syncing roster rules per league. Because the platform's autodraft only
+    reaches roughly every `teams`-th entry before it is your pick again, the
+    simulated roster grows one player per `teams` entries rather than one per
+    entry.
     """
-    scored: list[tuple[Player, float]] = []
+    pool: list[tuple[Player, float]] = []
     for player in available:
         if player.adp is None:
             continue
@@ -151,12 +162,60 @@ def rank_queue(
         if not strategy.may_draft(player.position, round_number, 0):
             continue
 
-        state = DraftState(round=round_number, pick=1)
         adjusted = player.model_copy(update={"adp": effective_rank})
-        scored.append((player, score(adjusted, strategy, settings, state)))
+        base = value_of(adjusted) * strategy.position_weight.get(player.position, 1.0)
+        base *= format_multiplier(player.position, strategy, settings)
+        pool.append((player, base))
 
-    ranked = sorted(scored, key=lambda pair: pair[1], reverse=True)
-    return ensure_startable_positions(ranked, strategy, settings)
+    return ensure_startable_positions(
+        _greedy_queue(pool, strategy, settings), strategy, settings
+    )
+
+
+def _greedy_queue(
+    pool: list[tuple[Player, float]],
+    strategy: Strategy,
+    settings: LeagueSettings,
+) -> list[tuple[Player, float]]:
+    """Repeatedly take the best player given the roster built so far."""
+    teams = max(1, settings.teams)
+    remaining = list(pool)
+    roster: list[Player] = []
+    ordered: list[tuple[Player, float]] = []
+
+    while remaining:
+        slot = len(ordered)
+        round_number = slot // teams + 1
+        plan = strategy.plan_for_round(round_number)
+
+        # Roster need is a property of the position, not the player, so it is
+        # computed once per position per slot rather than once per candidate.
+        need = {
+            position: need_multiplier(position, roster, settings)
+            for position in ("QB", "RB", "WR", "TE", "K", "DST")
+        }
+
+        best_index = 0
+        best_score = float("-inf")
+        for index, (player, base) in enumerate(remaining):
+            points = base * need.get(player.position, 1.0)
+            if plan:
+                if player.position in plan.prefer:
+                    points *= PREFER_BONUS
+                elif player.position in plan.avoid:
+                    points *= AVOID_PENALTY
+            if points > best_score:
+                best_score = points
+                best_index = index
+
+        player, _ = remaining.pop(best_index)
+        ordered.append((player, best_score))
+        # The autodraft only reaches roughly one entry in `teams` before it is
+        # your pick again, so the simulated roster grows at that rate.
+        if slot % teams == 0:
+            roster.append(player)
+
+    return ordered
 
 
 def ensure_startable_positions(
