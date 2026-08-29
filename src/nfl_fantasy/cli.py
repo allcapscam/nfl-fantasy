@@ -188,7 +188,8 @@ def read_names(path: Path | None) -> list[str]:
 
 
 def cmd_advise(registry: LeagueRegistry, key: str, slot: int,
-               taken_path: Path | None, roster_path: Path | None, limit: int) -> int:
+               taken_path: Path | None, roster_path: Path | None, limit: int,
+               draft_teams: int | None = None) -> int:
     """Recommend a pick by opportunity cost."""
     registry.get(key)
     settings = load_settings(key)
@@ -203,7 +204,8 @@ def cmd_advise(registry: LeagueRegistry, key: str, slot: int,
     # Cam asked for three to five options, always spanning at least two
     # positions, so a disagreement with the model has somewhere to go.
     result = advise(settings, players, slot, taken, roster,
-                    shortlist_size=max(3, min(5, limit)))
+                    shortlist_size=max(3, min(5, limit)),
+                    draft_teams=draft_teams)
 
     console.print(f"[bold]{key}[/bold] pick {result.pick} (round {result.round_number})"
                   f" | next pick {result.next_pick or 'none'}"
@@ -374,6 +376,8 @@ def main() -> int:
     adv.add_argument("--slot", type=int, required=True, help="Your draft position.")
     adv.add_argument("--taken", type=Path, default=None)
     adv.add_argument("--roster", type=Path, default=None)
+    adv.add_argument("--teams", type=int, default=None,
+                     help="Teams in the room, if it differs from the league.")
     adv.add_argument("--limit", type=int, default=4,
                  help="How many options to show (clamped to 3-5).")
 
@@ -409,7 +413,7 @@ def main() -> int:
         return cmd_board(registry, args.league, args.limit, args.include_unranked)
     if args.command == "advise":
         return cmd_advise(registry, args.league, args.slot, args.taken,
-                          args.roster, args.limit)
+                          args.roster, args.limit, args.teams)
     if args.command == "queue":
         return cmd_queue(registry, args.league, args.limit, args.out)
     return 1

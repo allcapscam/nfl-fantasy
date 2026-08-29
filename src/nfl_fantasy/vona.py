@@ -93,6 +93,7 @@ def runs_from_needs(
     start: int,
     end: int,
     my_slot: int,
+    teams: int | None = None,
 ) -> dict[str, float]:
     """Expected positional runs from what the teams picking next actually need.
 
@@ -102,10 +103,11 @@ def runs_from_needs(
     that team's unfilled slots.
     """
     runs = dict.fromkeys(POSITIONS, 0.0)
-    rosters = rosters_from_picks(positions_taken, settings.teams)
+    teams = teams or settings.teams
+    rosters = rosters_from_picks(positions_taken, teams)
 
     for overall in range(start + 1, end + 1):
-        slot = team_at_pick(overall, settings.teams)
+        slot = team_at_pick(overall, teams)
         if slot == my_slot:
             continue
         needs = team_needs(settings, rosters[slot])
@@ -195,6 +197,35 @@ def roster_cap(position: str, settings: LeagueSettings) -> int:
     return settings.max_startable(position) + BENCH_ALLOWANCE.get(position, 0)
 
 
+#: What a player who does not crack the starting lineup is actually worth.
+#: Value above replacement measures production, but production only counts if
+#: it enters your lineup. A fourth running back behind three starters scores
+#: nothing most weeks; he pays out on an injury or a bye, which is real but a
+#: fraction of what his raw value suggests.
+BENCH_VALUE = 0.35
+
+
+def starts_immediately(
+    position: str, roster_counts: dict[str, int], settings: LeagueSettings
+) -> bool:
+    """Would this player walk into the starting lineup?"""
+    return roster_counts.get(position, 0) < settings.max_startable(position)
+
+
+def lineup_multiplier(
+    position: str, roster_counts: dict[str, int], settings: LeagueSettings
+) -> float:
+    """Discount a player who would sit on your bench.
+
+    This corrects two mistakes seen in a live draft: the model offered a second
+    quarterback in round five behind an established starter, and preferred a
+    fourth running back to a tight end when the tight end slot was still empty.
+    Both come from comparing value without asking whether the player ever
+    enters the lineup.
+    """
+    return 1.0 if starts_immediately(position, roster_counts, settings) else BENCH_VALUE
+
+
 @dataclass
 class Opportunity:
     """What taking this position now saves you."""
@@ -251,14 +282,19 @@ class Candidate:
     runs: float
     upside: float = 1.0
     upside_note: str | None = None
+    lineup: float = 1.0
 
     @property
     def position(self) -> str:
         return self.valuation.player.position
 
     @property
+    def starts(self) -> bool:
+        return self.lineup >= 1.0
+
+    @property
     def cost_of_waiting(self) -> float:
-        return (self.valuation.vor - self.expected_next) * self.upside
+        return (self.valuation.vor - self.expected_next) * self.upside * self.lineup
 
 
 def candidates(
@@ -296,6 +332,7 @@ def candidates(
                     # is `run` places further down from where he sat.
                     expected_next=interpolate(vors, depth + run),
                     runs=run,
+                    lineup=lineup_multiplier(position, roster_counts, settings),
                 )
             )
     results.sort(key=lambda c: c.cost_of_waiting, reverse=True)

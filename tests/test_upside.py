@@ -117,3 +117,39 @@ def test_diversify_handles_a_thin_board():
     # Cannot invent a second position that isn't there; returns what exists.
     assert len(diversify(ranked, count=4, min_positions=2)) == 2
     assert diversify([], count=4) == []
+
+
+# -- the bench discount ------------------------------------------------------
+
+
+def test_a_player_who_would_not_start_is_discounted():
+    """Live-draft regression, twice over.
+
+    The model offered a second quarterback behind an established starter, and
+    preferred a fourth running back to a tight end while the TE slot sat empty.
+    Both came from valuing production that never enters the lineup.
+    """
+    from nfl_fantasy.vona import BENCH_VALUE, lineup_multiplier, starts_immediately
+
+    # One starting QB in this league.
+    assert starts_immediately("QB", {}, LEAGUE)
+    assert not starts_immediately("QB", {"QB": 1}, LEAGUE)
+    assert lineup_multiplier("QB", {"QB": 1}, LEAGUE) == BENCH_VALUE
+
+    # Two dedicated RB slots plus the flex, so a fourth back is bench.
+    assert starts_immediately("RB", {"RB": 2}, LEAGUE)
+    assert not starts_immediately("RB", {"RB": 3}, LEAGUE)
+
+
+def test_an_empty_slot_beats_a_better_bench_player():
+    """The exact call from round 7: RB4 graded higher, but the TE slot was open."""
+    board = [
+        val("Bench RB", "RB", 24.2),
+        val("Starting TE", "TE", 19.3),
+        val("Worse RB", "RB", 14.2),
+        val("Worse TE", "TE", 12.8),
+    ]
+    have = {"RB": 3, "TE": 0, "QB": 1, "WR": 2}
+    ranked = candidates(board, {"RB": 1.0, "TE": 0.8}, LEAGUE, have)
+    assert ranked[0].position == "TE"
+    assert ranked[0].starts

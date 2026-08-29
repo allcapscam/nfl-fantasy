@@ -88,9 +88,17 @@ def advise(
     my_roster: list[str],
     rounds: int | None = None,
     shortlist_size: int = 4,
+    draft_teams: int | None = None,
 ) -> Advice:
-    """What to take now, given who is gone and what you already have."""
+    """What to take now, given who is gone and what you already have.
+
+    `draft_teams` separates the room you are drafting in from the league you are
+    valuing for. They are normally the same, but a mock run with a different
+    team count still has to use the real room's size for the snake -- otherwise
+    the window between your picks, which is the whole input to VONA, is wrong.
+    """
     rounds = rounds or len([s for s in settings.roster_slots if s != "IR"])
+    teams = draft_teams or settings.teams
     board = value_board(settings, players)
 
     gone = {normalize(name) for name in taken}
@@ -104,15 +112,15 @@ def advise(
             position = by_key[key].player.position
             roster_counts[position] = roster_counts.get(position, 0) + 1
 
-    picks = snake_picks(slot, settings.teams, rounds)
+    picks = snake_picks(slot, teams, rounds)
 
     # The window that matters runs from *your* turn to your next one, not from
     # wherever the draft happens to be. Asked between your turns, answer for the
     # turn you are about to get.
     board_pick = len(taken) + 1
     current = next((p for p in picks if p >= board_pick), board_pick)
-    following = next_pick_after(current, slot, settings.teams, rounds)
-    round_number = (current - 1) // settings.teams + 1
+    following = next_pick_after(current, slot, teams, rounds)
+    round_number = (current - 1) // teams + 1
 
     # Two views of who goes next. ADP says where the market drafts a position;
     # roster need says which teams still have that hole to fill. Early rounds
@@ -127,7 +135,8 @@ def advise(
         if normalize(name) in by_key
     ]
     needs = runs_from_needs(
-        settings, taken_positions, current, following or current, slot
+        settings, taken_positions, current, following or current, slot,
+        teams=teams,
     )
     runs = blend_runs(prior, needs, round_number)
 
