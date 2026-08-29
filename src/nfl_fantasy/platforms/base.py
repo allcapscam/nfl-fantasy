@@ -26,6 +26,9 @@ class Player(BaseModel):
     adp: float | None = None
     projected_points: float | None = None
     bye_week: int | None = None
+    #: Projected games played. Distinct from total points: a player who
+    #: misses time is not worse per week, only available less often.
+    games: int | None = None
 
 
 class DraftState(BaseModel):

@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
 
+from nfl_fantasy.advisor import advise, load_players
 from nfl_fantasy.draft import rank_board, rank_queue
 from nfl_fantasy.leagues import LeagueRef, LeagueRegistry
 from nfl_fantasy.matching import apply_rankings
@@ -175,6 +176,69 @@ def board_from_rankings(key: str) -> list[Player]:
     ]
 
 
+def read_names(path: Path | None) -> list[str]:
+    """One player name per line; blank lines and # comments ignored."""
+    if not path or not path.exists():
+        return []
+    return [
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+
+
+def cmd_advise(registry: LeagueRegistry, key: str, slot: int,
+               taken_path: Path | None, roster_path: Path | None, limit: int) -> int:
+    """Recommend a pick by opportunity cost."""
+    registry.get(key)
+    settings = load_settings(key)
+    try:
+        players = load_players(key)
+    except FileNotFoundError as error:
+        console.print(f"[red]{error}[/red]")
+        return 1
+
+    taken = read_names(taken_path or Path(f"data/taken_{key}.txt"))
+    roster = read_names(roster_path or Path(f"data/roster_{key}.txt"))
+    result = advise(settings, players, slot, taken, roster)
+
+    console.print(f"[bold]{key}[/bold] pick {result.pick} (round {result.round_number})"
+                  f" | next pick {result.next_pick or 'none'}"
+                  f" | {len(taken)} gone, {len(roster)} on your roster")
+
+    for warning in result.warnings:
+        console.print(f"[red]{warning}[/red]")
+
+    if not result.opportunities:
+        console.print("[yellow]Nothing left to recommend.[/yellow]")
+        return 1
+
+    table = Table("Pos", "Best available", "VOR", "Expected next", "Cost of waiting",
+                  "Run")
+    for opportunity in result.opportunities[:limit]:
+        best = opportunity.best
+        table.add_row(
+            opportunity.position,
+            f"{best.player.name} ({best.player.team or '-'})",
+            f"{best.vor:.1f}",
+            f"{opportunity.expected_next:.1f}",
+            f"{opportunity.cost_of_waiting:.1f}",
+            f"{opportunity.runs:.1f}",
+        )
+    console.print(table)
+
+    pick = result.recommendation
+    console.print(f"\n[green]Take {pick.player.name}[/green] "
+                  f"({pick.player.position}, {pick.player.team}) -- "
+                  f"{result.opportunities[0].cost_of_waiting:.1f} points of value "
+                  f"lost by waiting, more than any other position.")
+    if pick.games and pick.ppg:
+        console.print(f"[dim]{pick.points:.0f} projected points over {pick.games} games "
+                      f"({pick.ppg:.1f}/game), {pick.adjusted:.0f} once missed weeks "
+                      f"are covered at replacement.[/dim]")
+    return 0
+
+
 def cmd_show(registry: LeagueRegistry, key: str) -> int:
     ref = registry.get(key)
     strategy = Strategy.load(ref.strategy)
@@ -290,6 +354,13 @@ def main() -> int:
     board.add_argument("--include-unranked", action="store_true",
                        help="Keep players with no ranking (normally hidden).")
 
+    adv = sub.add_parser("advise", help="Recommend a pick by opportunity cost.")
+    adv.add_argument("--league", required=True)
+    adv.add_argument("--slot", type=int, required=True, help="Your draft position.")
+    adv.add_argument("--taken", type=Path, default=None)
+    adv.add_argument("--roster", type=Path, default=None)
+    adv.add_argument("--limit", type=int, default=6)
+
     queue = sub.add_parser("queue", help="Export a ranking for the platform's autodraft.")
     queue.add_argument("--league", required=True)
     queue.add_argument("--limit", type=int, default=200)
@@ -320,6 +391,9 @@ def main() -> int:
         return cmd_show(registry, args.league)
     if args.command == "board":
         return cmd_board(registry, args.league, args.limit, args.include_unranked)
+    if args.command == "advise":
+        return cmd_advise(registry, args.league, args.slot, args.taken,
+                          args.roster, args.limit)
     if args.command == "queue":
         return cmd_queue(registry, args.league, args.limit, args.out)
     return 1

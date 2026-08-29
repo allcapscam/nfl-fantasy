@@ -25,6 +25,7 @@ class Ranking(BaseModel):
     projected_points: float | None = None
     tier: int | None = None
     bye_week: int | None = None
+    games: int | None = None
 
 
 @runtime_checkable

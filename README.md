@@ -145,7 +145,34 @@ uv run draftbot queue --league home
 roster/flex logic including superflex and TE-premium, the ranking engine,
 FantasyPros rankings and projections via API or CSV export, name matching
 (100% on the draftable range against a live Sleeper league), the Sleeper
-adapter, the Yahoo adapter and OAuth flow, roster-valid queue export, 61 tests.
+adapter, the Yahoo adapter and OAuth flow, roster-valid queue export, the VONA advisor, 86 tests.
+
+### The VONA advisor
+
+`draftbot advise` picks by opportunity cost rather than by who grades highest.
+
+Value starts from projections carrying **points and projected games from the
+same model**, which matters: total points quietly punish a player who misses
+time, and mixing games from one source with points from another corrupts the
+division. Missed weeks are backfilled at replacement level, because what an
+absence costs you is the gap to whoever you stream, not the player's own output.
+
+Points are then measured **above replacement** -- the last player who would
+realistically start at that position, with flex demand allocated greedily to
+whichever position has the better player on the board. This is what makes
+positions comparable: in a ten-team league the QB11 is nearly free, so the QB1's
+enormous raw total is worth far less than it looks.
+
+The pick itself maximises the two-pick total. Over your current turn and your
+next, taking a back gives `RB1 + E[best WR later]` and taking a receiver gives
+`WR1 + E[best RB later]`, so the back wins exactly when its drop is larger.
+Choosing the biggest drop *is* the optimum, not a heuristic. How many of each
+position will go is estimated from ADP before the draft and blended toward the
+room's actual behaviour as picks accumulate.
+
+Kickers and defenses are not gated. Their spread above replacement is so small
+that the maths pushes them to the last rounds on its own; a warning fires if a
+required slot can no longer be filled in the picks remaining.
 
 ### How the queue differs from the board
 
