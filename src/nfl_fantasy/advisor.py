@@ -13,10 +13,14 @@ from pathlib import Path
 from nfl_fantasy.platforms.base import Player
 from nfl_fantasy.settings import LeagueSettings
 from nfl_fantasy.sources.projections import ProjectionSource
+from nfl_fantasy.upside import describe, load_history, upside_multiplier
 from nfl_fantasy.valuation import Valuation, value_board
 from nfl_fantasy.vona import (
+    Candidate,
     Opportunity,
     blend_runs,
+    candidates,
+    diversify,
     missing_required,
     next_pick_after,
     opportunity_costs,
@@ -39,11 +43,14 @@ class Advice:
     next_pick: int | None
     round_number: int
     opportunities: list[Opportunity]
+    shortlist: list[Candidate]
     runs: dict[str, float]
     warnings: list[str]
 
     @property
     def recommendation(self) -> Valuation | None:
+        if self.shortlist:
+            return self.shortlist[0].valuation
         return self.opportunities[0].best if self.opportunities else None
 
 
@@ -80,6 +87,7 @@ def advise(
     taken: list[str],
     my_roster: list[str],
     rounds: int | None = None,
+    shortlist_size: int = 4,
 ) -> Advice:
     """What to take now, given who is gone and what you already have."""
     rounds = rounds or len([s for s in settings.roster_slots if s != "IR"])
@@ -123,12 +131,25 @@ def advise(
     )
     runs = blend_runs(prior, needs, round_number)
 
+    # A shortlist of players, not just of positions, with a ceiling premium on
+    # anyone the projections have little history to work from.
+    history = load_history(PROJECTION_DIR / f"{settings.key}_history.csv")
+    ranked = candidates(available, runs, settings, roster_counts)
+    for candidate in ranked:
+        key = candidate.valuation.player.id
+        candidate.upside = upside_multiplier(key, history, round_number)
+        candidate.upside_note = describe(key, history)
+    ranked.sort(key=lambda c: c.cost_of_waiting, reverse=True)
+    shortlist = diversify(ranked, count=shortlist_size, min_positions=2)
+
     opportunities = opportunity_costs(available, runs, settings, roster_counts)
     if not opportunities and available:
         # Every position is at its depth cap, but the pick still has to be
         # spent. Fall back to best available rather than leaving a roster spot
         # empty -- an unused pick is strictly worse than a bench flyer.
         opportunities = opportunity_costs(available, runs, settings, roster_counts={})
+        ranked = candidates(available, runs, settings, roster_counts={})
+        shortlist = diversify(ranked, count=shortlist_size, min_positions=2)
 
     picks_left = sum(1 for p in picks if p >= current)
     warnings = []
@@ -143,6 +164,7 @@ def advise(
         next_pick=following,
         round_number=round_number,
         opportunities=opportunities,
+        shortlist=shortlist,
         runs=runs,
         warnings=warnings,
     )

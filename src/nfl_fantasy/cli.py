@@ -200,7 +200,10 @@ def cmd_advise(registry: LeagueRegistry, key: str, slot: int,
 
     taken = read_names(taken_path or Path(f"data/taken_{key}.txt"))
     roster = read_names(roster_path or Path(f"data/roster_{key}.txt"))
-    result = advise(settings, players, slot, taken, roster)
+    # Cam asked for three to five options, always spanning at least two
+    # positions, so a disagreement with the model has somewhere to go.
+    result = advise(settings, players, slot, taken, roster,
+                    shortlist_size=max(3, min(5, limit)))
 
     console.print(f"[bold]{key}[/bold] pick {result.pick} (round {result.round_number})"
                   f" | next pick {result.next_pick or 'none'}"
@@ -213,29 +216,41 @@ def cmd_advise(registry: LeagueRegistry, key: str, slot: int,
         console.print("[yellow]Nothing left to recommend.[/yellow]")
         return 1
 
-    table = Table("Pos", "Best available", "VOR", "Expected next", "Cost of waiting",
-                  "Run")
-    for opportunity in result.opportunities[:limit]:
-        best = opportunity.best
+    table = Table("#", "Player", "Pos", "VOR", "If you wait", "Cost", "Note")
+    for index, candidate in enumerate(result.shortlist, start=1):
+        v = candidate.valuation
+        notes = []
+        if candidate.upside_note:
+            notes.append(f"upside: {candidate.upside_note}")
+        if v.games and v.games < 16:
+            notes.append(f"{v.games} gm")
         table.add_row(
-            opportunity.position,
-            f"{best.player.name} ({best.player.team or '-'})",
-            f"{best.vor:.1f}",
-            f"{opportunity.expected_next:.1f}",
-            f"{opportunity.cost_of_waiting:.1f}",
-            f"{opportunity.runs:.1f}",
+            str(index),
+            f"{v.player.name} ({v.player.team or '-'})",
+            candidate.position,
+            f"{v.vor:.1f}",
+            f"{candidate.expected_next:.1f}",
+            f"{candidate.cost_of_waiting:.1f}",
+            ", ".join(notes) or "",
         )
     console.print(table)
 
+    runs = ", ".join(
+        f"{pos} {result.runs[pos]:.1f}"
+        for pos in ("QB", "RB", "WR", "TE")
+        if result.runs.get(pos, 0) > 0.05
+    )
+    console.print(f"[dim]expected before your next pick: {runs}[/dim]")
+
     pick = result.recommendation
-    console.print(f"\n[green]Take {pick.player.name}[/green] "
+    console.print(f"\n[green]Lead: {pick.player.name}[/green] "
                   f"({pick.player.position}, {pick.player.team}) -- "
-                  f"{result.opportunities[0].cost_of_waiting:.1f} points of value "
-                  f"lost by waiting, more than any other position.")
-    if pick.games and pick.ppg:
-        console.print(f"[dim]{pick.points:.0f} projected points over {pick.games} games "
-                      f"({pick.ppg:.1f}/game), {pick.adjusted:.0f} once missed weeks "
-                      f"are covered at replacement.[/dim]")
+                  f"{result.shortlist[0].cost_of_waiting:.1f} points lost by waiting.")
+    alt = next((c for c in result.shortlist[1:]
+                if c.position != result.shortlist[0].position), None)
+    if alt:
+        console.print(f"[dim]Alternative at another position: {alt.valuation.player.name} "
+                      f"({alt.position}, {alt.cost_of_waiting:.1f}).[/dim]")
     return 0
 
 
@@ -359,7 +374,8 @@ def main() -> int:
     adv.add_argument("--slot", type=int, required=True, help="Your draft position.")
     adv.add_argument("--taken", type=Path, default=None)
     adv.add_argument("--roster", type=Path, default=None)
-    adv.add_argument("--limit", type=int, default=6)
+    adv.add_argument("--limit", type=int, default=4,
+                 help="How many options to show (clamped to 3-5).")
 
     queue = sub.add_parser("queue", help="Export a ranking for the platform's autodraft.")
     queue.add_argument("--league", required=True)

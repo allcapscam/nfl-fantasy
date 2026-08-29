@@ -1,0 +1,119 @@
+"""The ceiling premium, and the shortlist that surfaces it."""
+
+from nfl_fantasy.platforms.base import Player
+from nfl_fantasy.settings import LeagueSettings
+from nfl_fantasy.upside import (
+    MAX_UPSIDE_BONUS,
+    History,
+    describe,
+    load_history,
+    upside_multiplier,
+    upside_weight,
+)
+from nfl_fantasy.valuation import Valuation
+from nfl_fantasy.vona import candidates, diversify
+
+LEAGUE = LeagueSettings(
+    key="y", platform="yahoo", league_id="1", teams=10,
+    roster_slots=["QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "K", "DST"] + ["BN"] * 6,
+)
+
+
+def val(name, position, vor):
+    player = Player(id=name, name=name, position=position, projected_points=vor)
+    return Valuation(player=player, points=vor, games=16, adjusted=vor, replacement=0.0)
+
+
+# -- the premium -------------------------------------------------------------
+
+
+def test_no_gamble_in_round_one():
+    """An established elite player is what you want anchoring a roster."""
+    assert upside_weight(1) == 0.0
+
+
+def test_premium_ramps_in_then_caps():
+    assert 0 < upside_weight(3) < upside_weight(5)
+    assert upside_weight(6) == MAX_UPSIDE_BONUS
+    assert upside_weight(14) == MAX_UPSIDE_BONUS  # capped, never compounds
+
+
+def test_only_unproven_players_get_it():
+    history = {
+        "rookie": History(games=0, points=0.0),
+        "veteran": History(games=16, points=250.0),
+    }
+    assert upside_multiplier("rookie", history, 8) > 1.0
+    assert upside_multiplier("veteran", history, 8) == 1.0
+    # Absent from the file means a full prior season, so no premium.
+    assert upside_multiplier("unlisted", history, 8) == 1.0
+
+
+def test_a_handful_of_games_still_counts_as_unproven():
+    history = {"hurt": History(games=3, points=40.0)}
+    assert upside_multiplier("hurt", history, 8) > 1.0
+    assert describe("hurt", history) == "only 3 games in 2025"
+    assert describe("nobody", history) is None
+
+
+def test_describe_distinguishes_no_season_from_a_short_one():
+    history = {"none": History(games=0, points=0.0)}
+    assert describe("none", history) == "no 2025 games"
+
+
+def test_load_history_reads_the_file(tmp_path):
+    path = tmp_path / "h.csv"
+    path.write_text(
+        "name,position,prior_games,prior_points\n"
+        "Jeremiyah Love,RB,0,0\nOmarion Hampton,RB,9,119.7\n",
+        encoding="utf-8",
+    )
+    history = load_history(path)
+    assert history["jeremiyahlove"].games == 0
+    assert history["omarionhampton"].points == 119.7
+    assert load_history(tmp_path / "missing.csv") == {}
+
+
+# -- the shortlist -----------------------------------------------------------
+
+BOARD = [val(f"RB{i}", "RB", 100 - i * 4) for i in range(8)] + [
+    val(f"WR{i}", "WR", 80 - i * 3) for i in range(8)
+] + [val("TE0", "TE", 50)]
+
+
+def test_candidates_measure_each_player_not_just_the_best():
+    """The second-best back is measured one place deeper down the same list."""
+    ranked = candidates(BOARD, {"RB": 2.0, "WR": 1.0, "TE": 0.0}, LEAGUE, per_position=3)
+    backs = [c for c in ranked if c.position == "RB"]
+    assert len(backs) == 3
+    assert backs[0].depth == 0 and backs[1].depth == 1
+    # Each is compared against the player two places further on.
+    assert backs[0].expected_next > backs[1].expected_next
+
+
+def test_shortlist_always_offers_a_second_position():
+    """Four running backs is one recommendation with spares, not a shortlist."""
+    # A board where backs dominate every slot on raw cost of waiting.
+    lopsided = [val(f"RB{i}", "RB", 200 - i * 30) for i in range(6)] + [
+        val("WR0", "WR", 20), val("WR1", "WR", 19)
+    ]
+    ranked = candidates(lopsided, {"RB": 3.0, "WR": 0.1}, LEAGUE)
+    shortlist = diversify(ranked, count=4, min_positions=2)
+
+    assert len(shortlist) == 4
+    assert len({c.position for c in shortlist}) >= 2
+
+
+def test_shortlist_stays_ordered_by_cost():
+    ranked = candidates(BOARD, {"RB": 2.0, "WR": 2.0, "TE": 0.5}, LEAGUE)
+    shortlist = diversify(ranked, count=4)
+    costs = [c.cost_of_waiting for c in shortlist]
+    assert costs == sorted(costs, reverse=True)
+
+
+def test_diversify_handles_a_thin_board():
+    only_backs = [val("RB0", "RB", 50), val("RB1", "RB", 40)]
+    ranked = candidates(only_backs, {"RB": 1.0}, LEAGUE)
+    # Cannot invent a second position that isn't there; returns what exists.
+    assert len(diversify(ranked, count=4, min_positions=2)) == 2
+    assert diversify([], count=4) == []

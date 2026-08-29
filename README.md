@@ -145,7 +145,7 @@ uv run draftbot queue --league home
 roster/flex logic including superflex and TE-premium, the ranking engine,
 FantasyPros rankings and projections via API or CSV export, name matching
 (100% on the draftable range against a live Sleeper league), the Sleeper
-adapter, the Yahoo adapter and OAuth flow, roster-valid queue export, the VONA advisor, 89 tests.
+adapter, the Yahoo adapter and OAuth flow, roster-valid queue export, the VONA advisor, 99 tests.
 
 ### The VONA advisor
 
@@ -173,6 +173,21 @@ hole. The second matters because demand gets *consumed*: if every team already
 has its backs, another run on backs is less likely, not more. A momentum model
 gets that exactly backwards. ADP leads in the early rounds, where picks are
 best-player-available, and roster need takes over by the middle rounds.
+
+It recommends a **shortlist of three to five players spanning at least two
+positions**, not a single name. That needs a per-player version of the same
+subtraction -- the second-best back is measured against the back who would be
+left one place further down the list -- and a diversity rule, because four
+running backs is one recommendation with spares rather than a set of options.
+
+Players with **no prior-season production** carry a ceiling premium that ramps
+in by the middle rounds. This is a deliberate bias, not a correction:
+projections are a median estimate, and a rookie with no track record gets
+regressed toward the positional mean whether he is a future star or a bust. In a
+league where four of ten teams make the playoffs, ceiling is worth more than
+median -- but not in round one, where an established elite player is exactly
+what you want. The flag catches both true unknowns and veterans who lost a
+season to injury; both carry variance, and the advisor labels which is which.
 
 Kickers and defenses are not gated. Their spread above replacement is so small
 that the maths pushes them to the last rounds on its own; a warning fires if a

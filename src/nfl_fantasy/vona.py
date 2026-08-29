@@ -241,6 +241,101 @@ def opportunity_costs(
     return results
 
 
+@dataclass
+class Candidate:
+    """One player worth taking, and what passing on him costs."""
+
+    valuation: Valuation
+    depth: int
+    expected_next: float
+    runs: float
+    upside: float = 1.0
+    upside_note: str | None = None
+
+    @property
+    def position(self) -> str:
+        return self.valuation.player.position
+
+    @property
+    def cost_of_waiting(self) -> float:
+        return (self.valuation.vor - self.expected_next) * self.upside
+
+
+def candidates(
+    available: list[Valuation],
+    runs: dict[str, float],
+    settings: LeagueSettings,
+    roster_counts: dict[str, int] | None = None,
+    per_position: int = 3,
+) -> list[Candidate]:
+    """Individual players ranked by what passing on them would cost.
+
+    `opportunity_costs` answers "which position", comparing only each position's
+    best player. This answers "which player", which needs a per-player version
+    of the same subtraction: the second-best back is measured against the back
+    who would be there after the run, one place deeper down the same list.
+    """
+    roster_counts = roster_counts or {}
+    by_position: dict[str, list[Valuation]] = {}
+    for valuation in available:
+        by_position.setdefault(valuation.player.position, []).append(valuation)
+
+    results: list[Candidate] = []
+    for position, pool in by_position.items():
+        if roster_counts.get(position, 0) >= roster_cap(position, settings):
+            continue
+        pool.sort(key=lambda v: v.vor, reverse=True)
+        vors = [v.vor for v in pool]
+        run = runs.get(position, 0.0)
+        for depth, valuation in enumerate(pool[:per_position]):
+            results.append(
+                Candidate(
+                    valuation=valuation,
+                    depth=depth,
+                    # Take this player and the next one you get at this position
+                    # is `run` places further down from where he sat.
+                    expected_next=interpolate(vors, depth + run),
+                    runs=run,
+                )
+            )
+    results.sort(key=lambda c: c.cost_of_waiting, reverse=True)
+    return results
+
+
+def diversify(
+    ranked: list[Candidate], count: int = 4, min_positions: int = 2
+) -> list[Candidate]:
+    """Take the best `count`, forcing at least `min_positions` represented.
+
+    A shortlist that is four running backs is not a shortlist, it is one
+    recommendation with spares. Showing a genuine alternative at another
+    position is what makes the advice usable when you disagree with the model.
+    """
+    if not ranked:
+        return []
+
+    chosen: list[Candidate] = []
+    for candidate in ranked:
+        if len(chosen) >= count:
+            break
+        # Keep at most two from any one position while the shortlist is short,
+        # so a single deep position cannot crowd out every alternative.
+        same = sum(1 for c in chosen if c.position == candidate.position)
+        if same >= max(1, count - min_positions):
+            continue
+        chosen.append(candidate)
+
+    represented = {c.position for c in chosen}
+    if len(represented) < min_positions:
+        for candidate in ranked:
+            if candidate.position not in represented:
+                chosen.append(candidate)
+                represented.add(candidate.position)
+                if len(represented) >= min_positions:
+                    break
+    return chosen[:count]
+
+
 def missing_required(
     settings: LeagueSettings, roster_counts: dict[str, int], picks_left: int
 ) -> list[str]:
