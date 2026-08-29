@@ -153,3 +153,32 @@ def test_an_empty_slot_beats_a_better_bench_player():
     ranked = candidates(board, {"RB": 1.0, "TE": 0.8}, LEAGUE, have)
     assert ranked[0].position == "TE"
     assert ranked[0].starts
+
+
+def test_the_flex_is_not_double_booked():
+    """Regression: a third receiver read as a starter while the flex was full.
+
+    max_startable credits the flex to RB, WR and TE independently. With a third
+    back already occupying it, a third receiver is bench -- but the count-based
+    check said starter, and the model kept preferring bench receivers to
+    genuinely better players.
+    """
+    from nfl_fantasy.platforms.base import Player as P
+    from nfl_fantasy.roster import unfilled_slots
+    from nfl_fantasy.vona import starts_immediately
+
+    roster = [
+        P(id="q", name="q", position="QB"),
+        P(id="r1", name="r1", position="RB"), P(id="r2", name="r2", position="RB"),
+        P(id="r3", name="r3", position="RB"),          # this one takes the FLEX
+        P(id="w1", name="w1", position="WR"), P(id="w2", name="w2", position="WR"),
+        P(id="t", name="t", position="TE"),
+    ]
+    counts = {"QB": 1, "RB": 3, "WR": 2, "TE": 1}
+    open_slots = unfilled_slots(roster, LEAGUE)
+
+    # Counting positions says a third receiver starts. He does not.
+    assert starts_immediately("WR", counts, LEAGUE) is True
+    assert starts_immediately("WR", counts, LEAGUE, open_slots) is False
+    # Only the kicker and defence are genuinely open.
+    assert set(open_slots) == {"K", "DST"}

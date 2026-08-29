@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from nfl_fantasy.platforms.base import Player
+from nfl_fantasy.roster import unfilled_slots
 from nfl_fantasy.settings import LeagueSettings
 from nfl_fantasy.sources.projections import ProjectionSource
 from nfl_fantasy.upside import describe, load_history, upside_multiplier
@@ -143,7 +144,12 @@ def advise(
     # A shortlist of players, not just of positions, with a ceiling premium on
     # anyone the projections have little history to work from.
     history = load_history(PROJECTION_DIR / f"{settings.key}_history.csv")
-    ranked = candidates(available, runs, settings, roster_counts)
+    # Which lineup slots are genuinely still open, filling the flex against
+    # the real roster rather than counting positions.
+    my_players = [by_key[k].player for k in mine if k in by_key]
+    open_slots = unfilled_slots(my_players, settings)
+    ranked = candidates(available, runs, settings, roster_counts,
+                        open_slots=open_slots)
     for candidate in ranked:
         key = candidate.valuation.player.id
         candidate.upside = upside_multiplier(key, history, round_number)

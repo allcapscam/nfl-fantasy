@@ -24,7 +24,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 
-from nfl_fantasy.settings import FLEX_SLOTS, LeagueSettings
+from nfl_fantasy.settings import FLEX_SLOTS, LeagueSettings, slot_accepts
 from nfl_fantasy.valuation import Valuation
 
 POSITIONS = ("QB", "RB", "WR", "TE", "K", "DST")
@@ -206,14 +206,28 @@ BENCH_VALUE = 0.35
 
 
 def starts_immediately(
-    position: str, roster_counts: dict[str, int], settings: LeagueSettings
+    position: str,
+    roster_counts: dict[str, int],
+    settings: LeagueSettings,
+    open_slots: list[str] | None = None,
 ) -> bool:
-    """Would this player walk into the starting lineup?"""
+    """Would this player walk into the starting lineup?
+
+    When the caller can supply the actually-unfilled slots, use them. Counting
+    positions instead double-books the flex: `max_startable` credits the flex to
+    every eligible position independently, so with a third running back already
+    in it, a third receiver still reads as a starter when he would be bench.
+    """
+    if open_slots is not None:
+        return any(slot_accepts(slot, position) for slot in open_slots)
     return roster_counts.get(position, 0) < settings.max_startable(position)
 
 
 def lineup_multiplier(
-    position: str, roster_counts: dict[str, int], settings: LeagueSettings
+    position: str,
+    roster_counts: dict[str, int],
+    settings: LeagueSettings,
+    open_slots: list[str] | None = None,
 ) -> float:
     """Discount a player who would sit on your bench.
 
@@ -223,7 +237,8 @@ def lineup_multiplier(
     Both come from comparing value without asking whether the player ever
     enters the lineup.
     """
-    return 1.0 if starts_immediately(position, roster_counts, settings) else BENCH_VALUE
+    starts = starts_immediately(position, roster_counts, settings, open_slots)
+    return 1.0 if starts else BENCH_VALUE
 
 
 @dataclass
@@ -303,6 +318,7 @@ def candidates(
     settings: LeagueSettings,
     roster_counts: dict[str, int] | None = None,
     per_position: int = 3,
+    open_slots: list[str] | None = None,
 ) -> list[Candidate]:
     """Individual players ranked by what passing on them would cost.
 
@@ -332,7 +348,9 @@ def candidates(
                     # is `run` places further down from where he sat.
                     expected_next=interpolate(vors, depth + run),
                     runs=run,
-                    lineup=lineup_multiplier(position, roster_counts, settings),
+                    lineup=lineup_multiplier(
+                        position, roster_counts, settings, open_slots
+                    ),
                 )
             )
     results.sort(key=lambda c: c.cost_of_waiting, reverse=True)
