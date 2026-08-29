@@ -51,6 +51,13 @@ class Strategy(BaseModel):
     te_premium_weight: float = Field(
         1.15, description="TE multiplier when the league gives TEs bonus PPR."
     )
+    qb_passing_td_premium: float = Field(
+        0.06,
+        description=(
+            "QB value added per point of passing TD above the standard 4. "
+            "At the default, a 6-point league lifts quarterbacks about 12%."
+        ),
+    )
 
     @classmethod
     def load(cls, path: str | Path) -> Strategy:

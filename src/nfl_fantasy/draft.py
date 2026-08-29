@@ -12,6 +12,9 @@ from nfl_fantasy.strategy import Strategy
 PREFER_BONUS = 1.15
 AVOID_PENALTY = 0.5
 
+#: Points per passing touchdown that consensus rankings assume.
+STANDARD_PASS_TD = 4.0
+
 
 def overall_pick_number(round_number: int, pick_in_round: int, teams: int) -> int:
     return (round_number - 1) * teams + pick_in_round
@@ -48,6 +51,12 @@ def format_multiplier(position: str, strategy: Strategy, settings: LeagueSetting
         multiplier *= strategy.superflex_qb_weight
     if position == "TE" and settings.scoring.is_te_premium:
         multiplier *= strategy.te_premium_weight
+    # Consensus rankings assume the standard four points per passing touchdown.
+    # A league paying six is worth roughly two extra points a game to a starting
+    # quarterback, which those rankings do not reflect at all.
+    if position == "QB" and settings.scoring.pass_td > STANDARD_PASS_TD:
+        extra = settings.scoring.pass_td - STANDARD_PASS_TD
+        multiplier *= 1.0 + extra * strategy.qb_passing_td_premium
     return multiplier
 
 

@@ -32,6 +32,7 @@ class ManualSettings(BaseModel):
     )
     scoring: Literal["standard", "half_ppr", "ppr"] = "half_ppr"
     te_premium: float = Field(0.0, description="Bonus points per TE reception.")
+    pass_td: float = Field(4.0, description="Points per passing touchdown.")
     name: str = ""
 
     def to_settings(self, key: str, platform: Platform, league_id: str) -> LeagueSettings:
@@ -43,7 +44,11 @@ class ManualSettings(BaseModel):
             name=self.name,
             teams=self.teams,
             roster_slots=[slot.strip().upper() for slot in self.roster],
-            scoring=Scoring(reception=reception, te_reception_bonus=self.te_premium),
+            scoring=Scoring(
+                reception=reception,
+                te_reception_bonus=self.te_premium,
+                pass_td=self.pass_td,
+            ),
         )
 
 

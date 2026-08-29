@@ -230,3 +230,33 @@ def test_queue_responds_to_roster_shape():
         return next(i for i, (p, _) in enumerate(ordered) if p.position == "QB")
 
     assert first_qb_slot(superflex) < first_qb_slot(single_qb)
+
+
+def test_six_point_passing_tds_lift_quarterbacks():
+    """Consensus ranks assume 4-point passing TDs; a 6-point league doesn't."""
+    four = LEAGUE.model_copy(update={"scoring": Scoring(reception=0.5, pass_td=4.0)})
+    six = LEAGUE.model_copy(update={"scoring": Scoring(reception=0.5, pass_td=6.0)})
+
+    board = [
+        Player(id="q", name="QB1", position="QB", adp=30.0),
+        Player(id="w", name="WR1", position="WR", adp=28.0),
+    ]
+    strategy = Strategy.model_validate({"reach_tolerance": 100})
+
+    def qb_slot(settings):
+        ordered = rank_queue(strategy, settings, board)
+        return next(i for i, (p, _) in enumerate(ordered) if p.position == "QB")
+
+    # The better-ranked receiver wins at 4 points; the quarterback passes him at 6.
+    assert qb_slot(four) == 1
+    assert qb_slot(six) == 0
+
+
+def test_passing_td_premium_leaves_other_positions_alone():
+    six = LEAGUE.model_copy(update={"scoring": Scoring(reception=0.5, pass_td=6.0)})
+    from nfl_fantasy.draft import format_multiplier
+
+    strategy = Strategy()
+    assert format_multiplier("QB", strategy, six) > 1.0
+    assert format_multiplier("RB", strategy, six) == 1.0
+    assert format_multiplier("WR", strategy, six) == 1.0
