@@ -320,6 +320,7 @@ class Candidate:
     lineup: float = 1.0
     bye_penalty: float = 1.0
     bye_note: str | None = None
+    market_note: str | None = None
 
     @property
     def position(self) -> str:

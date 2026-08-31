@@ -10,6 +10,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from nfl_fantasy.flags import (
+    disagreement_note,
+    load_byes,
+    load_flags,
+    market_disagreement,
+)
 from nfl_fantasy.platforms.base import Player
 from nfl_fantasy.roster import unfilled_slots
 from nfl_fantasy.settings import LeagueSettings
@@ -66,6 +72,9 @@ def load_players(key: str, directory: Path = PROJECTION_DIR) -> list[Player]:
     rankings = ProjectionSource(path, adp_path if adp_path.exists() else None).fetch(
         LeagueSettings(key=key, platform="yahoo", league_id="0")
     )
+    # Platforms differ on whether projections carry byes -- Yahoo's do, ESPN's
+    # do not -- so a side-car file fills the gap without touching the pull.
+    byes = load_byes(directory / f"{key}_byes.csv")
     return [
         Player(
             id=normalize(r.name),
@@ -75,7 +84,7 @@ def load_players(key: str, directory: Path = PROJECTION_DIR) -> list[Player]:
             adp=r.adp,
             projected_points=r.projected_points,
             games=r.games,
-            bye_week=r.bye_week,
+            bye_week=r.bye_week or byes.get(normalize(r.name)),
         )
         for r in rankings
     ]
@@ -106,7 +115,12 @@ def advise(
     mine = {normalize(name) for name in my_roster}
     by_key = {v.player.id: v for v in board}
 
-    available = [v for v in board if v.player.id not in gone]
+    flags = load_flags(PROJECTION_DIR / f"{settings.key}_flags.csv")
+    excluded = {k for k, f in flags.items() if f.excluded}
+    available = [
+        v for v in board
+        if v.player.id not in gone and v.player.id not in excluded
+    ]
     roster_counts: dict[str, int] = {}
     for key in mine:
         if key in by_key:
@@ -154,10 +168,15 @@ def advise(
             roster_byes[player.bye_week] = roster_byes.get(player.bye_week, 0) + 1
     ranked = candidates(available, runs, settings, roster_counts,
                         open_slots=open_slots, roster_byes=roster_byes)
+    value_rank = {v.player.id: i for i, v in enumerate(board, start=1)}
     for candidate in ranked:
         key = candidate.valuation.player.id
         candidate.upside = upside_multiplier(key, history, round_number)
         candidate.upside_note = describe(key, history)
+        gap = market_disagreement(value_rank.get(key, 999), candidate.valuation.player.adp)
+        candidate.market_note = disagreement_note(gap)
+        if key in flags:
+            candidate.market_note = flags[key].reason or candidate.market_note
     ranked.sort(key=lambda c: c.cost_of_waiting, reverse=True)
     shortlist = diversify(ranked, count=shortlist_size, min_positions=2)
 

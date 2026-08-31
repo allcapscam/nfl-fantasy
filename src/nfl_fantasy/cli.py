@@ -222,6 +222,10 @@ def cmd_advise(registry: LeagueRegistry, key: str, slot: int,
     for index, candidate in enumerate(result.shortlist, start=1):
         v = candidate.valuation
         notes = []
+        if candidate.market_note:
+            notes.append(f"!! {candidate.market_note}")
+        if candidate.bye_note:
+            notes.append(candidate.bye_note)
         if candidate.upside_note:
             notes.append(f"upside: {candidate.upside_note}")
         if v.games and v.games < 16:

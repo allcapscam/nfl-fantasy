@@ -145,7 +145,7 @@ uv run draftbot queue --league home
 roster/flex logic including superflex and TE-premium, the ranking engine,
 FantasyPros rankings and projections via API or CSV export, name matching
 (100% on the draftable range against a live Sleeper league), the Sleeper
-adapter, the Yahoo adapter and OAuth flow, roster-valid queue export, the VONA advisor, 99 tests.
+adapter, the Yahoo adapter and OAuth flow, roster-valid queue export, the VONA advisor, 112 tests.
 
 ### The VONA advisor
 
@@ -188,6 +188,18 @@ league where four of ten teams make the playoffs, ceiling is worth more than
 median -- but not in round one, where an established elite player is exactly
 what you want. The flag catches both true unknowns and veterans who lost a
 season to injury; both carry variance, and the advisor labels which is which.
+
+It also knows what it cannot know. A projection is a snapshot, and a large
+gap between projected value and ADP is more often stale data than free value --
+during a live draft the model rated a running back the best value on the board
+while he sat on the commissioner's exempt list, unable to play. Candidates whose
+value rank sits far ahead of their draft position are now flagged to check for
+news rather than presented as an edge, and `{league}_flags.csv` records what the
+feed does not carry, so a ruled-out player stops being recommended.
+
+Bye weeks come from `{league}_byes.csv` when the platform does not ship them.
+Yahoo's player list carries byes; ESPN's projection payload does not, and
+without them the bye-crowding penalty silently never fires.
 
 Kickers and defenses are not gated. Their spread above replacement is so small
 that the maths pushes them to the last rounds on its own; a warning fires if a
