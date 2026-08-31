@@ -46,6 +46,19 @@ class Valuation:
         return self.adjusted - self.replacement
 
     @property
+    def bench_vor(self) -> float:
+        """Value if this player will sit rather than start.
+
+        The games backfill credits a player with replacement production for the
+        weeks he misses, which is right for a starter you would stream around.
+        For a bench player it is phantom value: you already have someone in that
+        slot, so there is nothing to backfill. Judging a backup on the adjusted
+        figure overrates exactly the injury-prone players a backup exists to
+        insure against.
+        """
+        return self.points - self.replacement
+
+    @property
     def ppg(self) -> float | None:
         if not self.games:
             return None

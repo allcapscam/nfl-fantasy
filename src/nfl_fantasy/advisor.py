@@ -148,8 +148,12 @@ def advise(
     # the real roster rather than counting positions.
     my_players = [by_key[k].player for k in mine if k in by_key]
     open_slots = unfilled_slots(my_players, settings)
+    roster_byes: dict[int, int] = {}
+    for player in my_players:
+        if player.bye_week:
+            roster_byes[player.bye_week] = roster_byes.get(player.bye_week, 0) + 1
     ranked = candidates(available, runs, settings, roster_counts,
-                        open_slots=open_slots)
+                        open_slots=open_slots, roster_byes=roster_byes)
     for candidate in ranked:
         key = candidate.valuation.player.id
         candidate.upside = upside_multiplier(key, history, round_number)

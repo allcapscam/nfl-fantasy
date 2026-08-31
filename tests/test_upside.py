@@ -182,3 +182,57 @@ def test_the_flex_is_not_double_booked():
     assert starts_immediately("WR", counts, LEAGUE, open_slots) is False
     # Only the kicker and defence are genuinely open.
     assert set(open_slots) == {"K", "DST"}
+
+
+# -- draft-day regressions from the 6572 league ------------------------------
+
+
+def test_a_bench_player_is_valued_on_real_points_not_backfilled_ones():
+    """Regression: Brissett's 215 real points read as 314 as a backup QB.
+
+    The games backfill credits replacement production for missed weeks. That is
+    right for a starter you stream around and meaningless for a QB2 -- you
+    already have someone in the slot.
+    """
+    hurt = Valuation(
+        player=Player(id="h", name="Hurt QB", position="QB", projected_points=215),
+        points=215.0, games=11, adjusted=314.0, replacement=317.0,
+    )
+    healthy = Valuation(
+        player=Player(id="w", name="Healthy QB", position="QB", projected_points=292),
+        points=292.0, games=15, adjusted=312.0, replacement=317.0,
+    )
+    # Backfilled, the injured one looks better. On real points he plainly is not.
+    assert hurt.vor > healthy.vor
+    assert healthy.bench_vor > hurt.bench_vor
+
+
+def test_a_crowded_bye_week_is_penalised():
+    """Regression: it offered a bye-11 kicker into a week with four starters out."""
+    from nfl_fantasy.vona import BYE_CROWDING_PENALTY, bye_conflict
+
+    crowded = {11: 4}
+    assert bye_conflict(11, crowded)[0] == BYE_CROWDING_PENALTY
+    assert "week 11" in bye_conflict(11, crowded)[1]
+    assert bye_conflict(7, crowded) == (1.0, None)   # a quiet week is fine
+    assert bye_conflict(None, crowded) == (1.0, None)
+    assert bye_conflict(11, None) == (1.0, None)
+
+
+def test_the_shortlist_never_hides_a_positions_best_player():
+    """Regression: the best defence vanished behind two worse ones.
+
+    Ranking by steepest drop is right for picking a position. Applied to a list
+    of players it can surface a deeper name while the better one is never shown.
+    """
+    board = [
+        val("Best DST", "DST", 21.1),
+        val("Mid DST", "DST", 17.2),
+        val("Worse DST", "DST", 16.5),
+        val("A WR", "WR", 5.0),
+    ]
+    ranked = candidates(board, {"DST": 3.0, "WR": 0.5}, LEAGUE, {"WR": 0})
+    shortlist = diversify(ranked, count=4, min_positions=2)
+    names = [c.valuation.player.name for c in shortlist]
+    assert "Best DST" in names
+    assert names.index("Best DST") < names.index("Mid DST")

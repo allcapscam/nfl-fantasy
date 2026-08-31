@@ -197,6 +197,26 @@ def roster_cap(position: str, settings: LeagueSettings) -> int:
     return settings.max_startable(position) + BENCH_ALLOWANCE.get(position, 0)
 
 
+#: Penalty for piling another bye onto a week that is already thin. Byes are
+#: invisible to value models, but a week where four starters sit is a game you
+#: probably lose, and one more body there makes it worse. Recommending a
+#: bye-week-11 kicker into exactly that week is what prompted this.
+BYE_CROWDING_PENALTY = 0.55
+BYE_CROWDED_AT = 3
+
+
+def bye_conflict(
+    bye: int | None, roster_byes: dict[int, int] | None
+) -> tuple[float, str | None]:
+    """Discount a player whose bye lands on an already-crowded week."""
+    if not bye or not roster_byes:
+        return 1.0, None
+    stacked = roster_byes.get(bye, 0)
+    if stacked >= BYE_CROWDED_AT:
+        return BYE_CROWDING_PENALTY, f"week {bye} already has {stacked} on bye"
+    return 1.0, None
+
+
 #: What a player who does not crack the starting lineup is actually worth.
 #: Value above replacement measures production, but production only counts if
 #: it enters your lineup. A fourth running back behind three starters scores
@@ -298,6 +318,8 @@ class Candidate:
     upside: float = 1.0
     upside_note: str | None = None
     lineup: float = 1.0
+    bye_penalty: float = 1.0
+    bye_note: str | None = None
 
     @property
     def position(self) -> str:
@@ -308,8 +330,14 @@ class Candidate:
         return self.lineup >= 1.0
 
     @property
+    def value(self) -> float:
+        """Value in the role this player would actually fill."""
+        return self.valuation.vor if self.starts else self.valuation.bench_vor
+
+    @property
     def cost_of_waiting(self) -> float:
-        return (self.valuation.vor - self.expected_next) * self.upside * self.lineup
+        gap = self.value - self.expected_next
+        return gap * self.upside * self.lineup * self.bye_penalty
 
 
 def candidates(
@@ -319,6 +347,7 @@ def candidates(
     roster_counts: dict[str, int] | None = None,
     per_position: int = 3,
     open_slots: list[str] | None = None,
+    roster_byes: dict[int, int] | None = None,
 ) -> list[Candidate]:
     """Individual players ranked by what passing on them would cost.
 
@@ -351,6 +380,12 @@ def candidates(
                     lineup=lineup_multiplier(
                         position, roster_counts, settings, open_slots
                     ),
+                    bye_penalty=bye_conflict(
+                        valuation.player.bye_week, roster_byes
+                    )[0],
+                    bye_note=bye_conflict(
+                        valuation.player.bye_week, roster_byes
+                    )[1],
                 )
             )
     results.sort(key=lambda c: c.cost_of_waiting, reverse=True)
@@ -369,10 +404,29 @@ def diversify(
     if not ranked:
         return []
 
+    # Show each position's best player, not whichever happens to have the
+    # steepest drop. Ranking by drop is right for choosing a position; applied
+    # to a list it once hid the best defence on the board behind two worse ones.
+    best_at: dict[str, Candidate] = {}
+    for candidate in ranked:
+        current = best_at.get(candidate.position)
+        if current is None or candidate.value > current.value:
+            best_at[candidate.position] = candidate
+    ranked = sorted(
+        {id(c): c for c in list(best_at.values()) + ranked}.values(),
+        key=lambda c: c.cost_of_waiting,
+        reverse=True,
+    )
+
     chosen: list[Candidate] = []
+    seen_best: set[str] = set()
     for candidate in ranked:
         if len(chosen) >= count:
             break
+        # Never offer a deeper player while that position's best is still unshown.
+        if candidate is not best_at.get(candidate.position)                 and candidate.position not in seen_best:
+            continue
+        seen_best.add(candidate.position)
         # Keep at most two from any one position while the shortlist is short,
         # so a single deep position cannot crowd out every alternative.
         same = sum(1 for c in chosen if c.position == candidate.position)
