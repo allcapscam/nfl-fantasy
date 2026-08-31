@@ -7,6 +7,7 @@ from nfl_fantasy.settings import LeagueSettings
 from nfl_fantasy.valuation import Valuation
 from nfl_fantasy.vona import (
     blend_runs,
+    candidates,
     interpolate,
     missing_required,
     need_weight,
@@ -204,3 +205,60 @@ def test_roster_cap_does_not_let_flex_inflate_tight_end_demand():
     assert roster_cap("QB", LEAGUE) == 2
     assert roster_cap("K", LEAGUE) == 1
     assert roster_cap("DST", LEAGUE) == 1
+
+
+# -- the cost arithmetic itself ---------------------------------------------
+
+
+def test_a_bench_candidate_is_compared_against_a_bench_baseline():
+    """Regression: value and baseline were computed on different scales.
+
+    A bench player's value dropped the games backfill while the baseline kept
+    it, so every bench candidate showed the same constant gap no matter how good
+    he was, and the ranking between them carried no information.
+    """
+    from nfl_fantasy.platforms.base import Player as P
+
+    def v(name, points, replacement):
+        pl = P(id=name, name=name, position="QB", projected_points=points)
+        return Valuation(player=pl, points=points, games=11,
+                         adjusted=points + 60, replacement=replacement)
+
+    pool = [v(f"QB{i}", 300 - i * 10, 290) for i in range(5)]
+    # A quarterback is already rostered, so these are all bench candidates.
+    ranked = candidates(pool, {"QB": 2.0}, LEAGUE, roster_counts={"QB": 1})
+    gaps = [c.cost_of_waiting for c in ranked]
+    assert len({round(g, 6) for g in gaps}) > 1  # they differ from each other
+    assert gaps == sorted(gaps, reverse=True)
+
+
+def test_multipliers_scale_the_player_not_the_gap():
+    """Regression: (value - baseline) * bonus also inflated the baseline.
+
+    The premium describes the player. Applying it to the difference credits him
+    for a share of the replacement he is being measured against, which nothing
+    justifies and which shrinks the effect when the gap is small.
+    """
+    from nfl_fantasy.platforms.base import Player as P
+
+    pl = P(id="r", name="Rookie", position="WR", projected_points=200)
+    val_ = Valuation(player=pl, points=200, games=16, adjusted=200, replacement=180)
+    c = candidates([val_], {"WR": 0.0}, LEAGUE)[0]
+    c.upside = 1.25
+
+    assert c.adjusted_value == val_.vor * 1.25
+    assert c.cost_of_waiting == c.adjusted_value - c.expected_next
+
+
+def test_the_best_player_still_matches_the_two_pick_proof():
+    """The position's best player must reproduce the original derivation."""
+    from nfl_fantasy.platforms.base import Player as P
+
+    def v(name, points):
+        pl = P(id=name, name=name, position="RB", projected_points=points)
+        return Valuation(player=pl, points=points, games=16, adjusted=points, replacement=0)
+
+    pool = [v(f"RB{i}", 100 - i * 10) for i in range(6)]
+    run = 2.0
+    best = candidates(pool, {"RB": run}, LEAGUE)[0]
+    assert best.cost_of_waiting == pool[0].vor - interpolate([x.vor for x in pool], run)

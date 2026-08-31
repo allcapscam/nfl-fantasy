@@ -81,14 +81,22 @@ BOARD = [val(f"RB{i}", "RB", 100 - i * 4) for i in range(8)] + [
 ] + [val("TE0", "TE", 50)]
 
 
-def test_candidates_measure_each_player_not_just_the_best():
-    """The second-best back is measured one place deeper down the same list."""
+def test_every_player_at_a_position_shares_one_baseline():
+    """Regression: deeper players were measured further down the list.
+
+    That assumed the players ahead of them also disappeared. But if you pass on
+    the second-best back you take the best one -- you do not wait. Everyone at a
+    position is compared against the same thing: whoever is left after the run.
+    Deeper players then score lower purely because they are worth less.
+    """
     ranked = candidates(BOARD, {"RB": 2.0, "WR": 1.0, "TE": 0.0}, LEAGUE, per_position=3)
     backs = [c for c in ranked if c.position == "RB"]
     assert len(backs) == 3
     assert backs[0].depth == 0 and backs[1].depth == 1
-    # Each is compared against the player two places further on.
-    assert backs[0].expected_next > backs[1].expected_next
+
+    assert backs[0].expected_next == backs[1].expected_next == backs[2].expected_next
+    # Ordering now comes from value alone, which is the honest comparison.
+    assert backs[0].cost_of_waiting > backs[1].cost_of_waiting > backs[2].cost_of_waiting
 
 
 def test_shortlist_always_offers_a_second_position():

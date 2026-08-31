@@ -336,9 +336,26 @@ class Candidate:
         return self.valuation.vor if self.starts else self.valuation.bench_vor
 
     @property
+    def adjusted_value(self) -> float:
+        """Value once the per-player adjustments are applied.
+
+        The multipliers describe *this player* -- his ceiling, whether he
+        reaches your lineup, whether his bye lands in a week you are already
+        thin. They belong on his value, not on the gap between him and the
+        field, because scaling the gap silently scales the baseline too.
+        """
+        return self.value * self.upside * self.lineup * self.bye_penalty
+
+    @property
     def cost_of_waiting(self) -> float:
-        gap = self.value - self.expected_next
-        return gap * self.upside * self.lineup * self.bye_penalty
+        """What passing on this player costs, over your next two picks.
+
+        For a position's best player this is exactly the quantity the two-pick
+        derivation proves: his value minus the value of whoever is left after
+        the run. Deeper players share that same baseline, so they score lower
+        purely because they are worth less -- which is the honest comparison.
+        """
+        return self.adjusted_value - self.expected_next
 
 
 def candidates(
@@ -353,9 +370,16 @@ def candidates(
     """Individual players ranked by what passing on them would cost.
 
     `opportunity_costs` answers "which position", comparing only each position's
-    best player. This answers "which player", which needs a per-player version
-    of the same subtraction: the second-best back is measured against the back
-    who would be there after the run, one place deeper down the same list.
+    best player. This answers "which player", and every player at a position is
+    measured against the *same* baseline: whoever is left there after the run.
+
+    Two things that were wrong here and are worth stating. Deeper players were
+    measured one place further down the list, which assumed the players ahead of
+    them also vanished -- but if you pass on the second-best back you simply take
+    the best one, so the counterfactual was incoherent. And a bench candidate's
+    value was compared against a baseline built from starter values, mixing two
+    scales so that every bench player scored the same constant gap regardless of
+    who he was.
     """
     roster_counts = roster_counts or {}
     by_position: dict[str, list[Valuation]] = {}
@@ -367,16 +391,18 @@ def candidates(
         if roster_counts.get(position, 0) >= roster_cap(position, settings):
             continue
         pool.sort(key=lambda v: v.vor, reverse=True)
-        vors = [v.vor for v in pool]
         run = runs.get(position, 0.0)
+        starts = starts_immediately(position, roster_counts, settings, open_slots)
+        # Baseline on the same scale as the candidates it is compared against:
+        # bench value if this player would sit, starter value if he would play.
+        scale = [(v.vor if starts else v.bench_vor) for v in pool]
+        baseline = interpolate(scale, run)
         for depth, valuation in enumerate(pool[:per_position]):
             results.append(
                 Candidate(
                     valuation=valuation,
                     depth=depth,
-                    # Take this player and the next one you get at this position
-                    # is `run` places further down from where he sat.
-                    expected_next=interpolate(vors, depth + run),
+                    expected_next=baseline,
                     runs=run,
                     lineup=lineup_multiplier(
                         position, roster_counts, settings, open_slots

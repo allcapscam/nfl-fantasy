@@ -145,7 +145,7 @@ uv run draftbot queue --league home
 roster/flex logic including superflex and TE-premium, the ranking engine,
 FantasyPros rankings and projections via API or CSV export, name matching
 (100% on the draftable range against a live Sleeper league), the Sleeper
-adapter, the Yahoo adapter and OAuth flow, roster-valid queue export, the VONA advisor, 112 tests.
+adapter, the Yahoo adapter and OAuth flow, roster-valid queue export, the VONA advisor, 115 tests.
 
 ### The VONA advisor
 
@@ -173,6 +173,20 @@ hole. The second matters because demand gets *consumed*: if every team already
 has its backs, another run on backs is less likely, not more. A momentum model
 gets that exactly backwards. ADP leads in the early rounds, where picks are
 best-player-available, and roster need takes over by the middle rounds.
+
+The arithmetic, precisely. A candidate's cost of waiting is
+
+    (value x upside x lineup x bye) - baseline
+
+where `value` is his worth in the role he would actually fill -- above
+replacement if he starts, on raw points if he sits -- and `baseline` is the
+value of whoever is left at his position after the expected run, computed on
+that same scale. For a position's best player this reduces exactly to the
+two-pick derivation above. The multipliers describe the player, so they scale
+his value rather than the gap; scaling the gap would silently credit him for a
+share of the replacement he is measured against. Every player at a position
+shares one baseline, so deeper names rank lower because they are worth less
+rather than because they are compared against something further down the list.
 
 It recommends a **shortlist of three to five players spanning at least two
 positions**, not a single name. That needs a per-player version of the same
