@@ -36,6 +36,13 @@ POSITION_MAP = {"DEF": "DST"}
 #: than as someone with two spare weeks to backfill.
 FULL_SEASON = 16
 
+#: Sleeper reports gp=1 for every defence -- its projection is a season total,
+#: not a one-game sample. Taken literally the games adjustment backfills fifteen
+#: missing weeks at replacement rate, which doubled every defence's value and
+#: floated the Rams into the first round. A defence never misses a week: the
+#: unit plays whenever the team does.
+ALWAYS_FULL_SEASON = {"DEF"}  # Sleeper's raw code, before POSITION_MAP
+
 
 def fetch(url: str, timeout: float = 90.0):
     response = httpx.get(url, timeout=timeout)
@@ -82,7 +89,9 @@ def main() -> int:
             "team": record.get("team") or "",
             "position": POSITION_MAP.get(position, position),
             "points": round(float(points), 1),
-            "games": min(int(float(games)), FULL_SEASON) if games else FULL_SEASON,
+            "games": (FULL_SEASON
+                      if position in ALWAYS_FULL_SEASON or not games
+                      else min(int(float(games)), FULL_SEASON)),
             "bye": record.get("bye_week") or "",
             # Sleeper's ADP uses 999 to mean "essentially undrafted".
             "adp": round(float(adp), 1) if adp and float(adp) < 900 else "",
@@ -107,8 +116,16 @@ def main() -> int:
           lambda r: [r["name"], r["team"], r["position"], r["games"], r["bye"], r["points"]])
     write(f"{args.league}_adp.csv", ["name", "position", "adp"],
           lambda r: [r["name"], r["position"], r["adp"]] if r["adp"] != "" else None)
-    write(f"{args.league}_byes.csv", ["name", "bye"],
-          lambda r: [r["name"], r["bye"]] if r["bye"] != "" else None)
+    # Sleeper ships no bye weeks at all, so this file is built elsewhere (from
+    # ESPN's schedule endpoint). Writing an empty one over it silently disables
+    # the bye-crowding penalty, which is how a real draft ended up being offered
+    # a kicker into a week that already had four starters out.
+    byes = args.out / f"{args.league}_byes.csv"
+    if any(r["bye"] != "" for r in rows) or not byes.exists():
+        write(f"{args.league}_byes.csv", ["name", "bye"],
+              lambda r: [r["name"], r["bye"]] if r["bye"] != "" else None)
+    else:
+        print(f"  kept existing {byes} (feed carried no byes)")
     write(f"{args.league}_history.csv",
           ["name", "position", "prior_games", "prior_points"],
           lambda r: [r["name"], r["position"], 0 if r["prior"] < 60 else FULL_SEASON,
