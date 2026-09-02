@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import itertools
+import multiprocessing
 import random
 import statistics
 import sys
@@ -183,7 +184,74 @@ def run(strategy, board, settings, slot, teams, rounds, seed):
     return lineup_points(mine, settings), mine
 
 
-def openings(board, settings, slot, teams, rounds, runs, depth):
+#: Built once per worker process. The board is several hundred objects and the
+#: sequences number in the hundreds, so shipping it with every task would cost
+#: more than the simulation it feeds.
+_CTX: dict = {}
+
+
+def _init_worker(league: str) -> None:
+    settings = load_settings(league)
+    _CTX["settings"] = settings
+    _CTX["board"] = value_board(settings, load_players(league))
+
+
+def _score_sequence(job):
+    seq, slot, teams, rounds, runs = job
+    settings, board = _CTX["settings"], _CTX["board"]
+    strategy = opening(list(seq))
+    scores = [run(strategy, board, settings, slot, teams, rounds, seed)[0]
+              for seed in range(runs)]
+    return seq, statistics.mean(scores), statistics.stdev(scores) / (runs ** 0.5)
+
+
+def valid_openings(settings, depth, prefix=(), core=("RB", "WR", "TE", "QB")):
+    """Every opening of `depth` picks you could actually start.
+
+    `prefix` pins the picks already made, so the sweep answers the question you
+    still have rather than re-deciding rounds that are over.
+    """
+    free = depth - len(prefix)
+    return [tuple(prefix) + x for x in itertools.product(core, repeat=free)
+            if all(Counter(tuple(prefix) + x)[p] <= roster_cap(p, settings)
+                   for p in tuple(prefix) + x)]
+
+
+def summarise(scored, depth, fixed=0):
+    """Where the signal is, once hundreds of sequences are too many to read.
+
+    Two cuts. First, what a position is worth *in a given round* -- averaged
+    over every sequence that puts it there, so the other picks wash out. Second,
+    how many of each position the opening should contain at all. Both are far
+    more stable than any single sequence, because each average is built from
+    hundreds of drafts rather than a hundred.
+    """
+    cols = ("RB", "WR", "TE", "QB")
+    print()
+    print("  value of each position by round, averaged over every opening")
+    print()
+    print(f"  {'round':>6}" + "".join(f"{p:>9}" for p in cols))
+    for rnd in range(fixed, depth):
+        cells = ""
+        for pos in cols:
+            at = [m for m, _, seq in scored if seq[rnd] == pos]
+            cells += f"{statistics.mean(at):>9.0f}" if at else f"{'-':>9}"
+        print(f"  {rnd + 1:>6}{cells}")
+
+    print()
+    print(f"  how many of each position belong in the first {depth} picks")
+    print()
+    print(f"  {'count':>6}" + "".join(f"{p:>9}" for p in cols))
+    for n in range(depth + 1):
+        cells = ""
+        for pos in cols:
+            at = [m for m, _, seq in scored if Counter(seq)[pos] == n]
+            cells += f"{statistics.mean(at):>9.0f}" if at else f"{'-':>9}"
+        print(f"  {n:>6}{cells}")
+
+
+def openings(board, settings, slot, teams, rounds, runs, depth,
+             jobs=1, prefix=(), show=25):
     """Which opening sequence of positions ends up with the best lineup?
 
     Every sequence runs against the same numbered seeds, so the comparison is
@@ -192,29 +260,42 @@ def openings(board, settings, slot, teams, rounds, runs, depth):
     small next to run-to-run noise, so the standard error is reported -- without
     it these numbers invite conclusions they cannot support.
     """
-    core = ["RB", "WR", "TE", "QB"]
-    seqs = [tuple(x) for x in itertools.product(core, repeat=depth)]
-    seqs = [x for x in seqs
-            if all(Counter(x)[p] <= roster_cap(p, settings) for p in x)]
+    seqs = valid_openings(settings, depth, prefix)
+    jobs = max(1, min(jobs, len(seqs)))
+    pinned = f", first {len(prefix)} pinned to {' '.join(prefix)}" if prefix else ""
+    print(f"  opening {depth} picks, {runs} runs each, {len(seqs)} sequences, "
+          f"{len(seqs) * runs} drafts on {jobs} core(s){pinned}")
 
-    scored = []
-    for seq in seqs:
-        strategy = opening(list(seq))
-        scores = [run(strategy, board, settings, slot, teams, rounds, seed)[0]
-                  for seed in range(runs)]
-        scored.append((statistics.mean(scores),
-                       statistics.stdev(scores) / (runs ** 0.5), seq))
-    scored.sort(reverse=True)
+    tasks = [(seq, slot, teams, rounds, runs) for seq in seqs]
+    if jobs > 1:
+        with multiprocessing.Pool(jobs, _init_worker, (settings.key,)) as pool:
+            results = pool.map(_score_sequence, tasks, chunksize=4)
+    else:
+        _CTX["settings"], _CTX["board"] = settings, board
+        results = [_score_sequence(t) for t in tasks]
 
-    print(f"  opening {depth} picks, {runs} runs each, {len(seqs)} sequences")
-    print(f"  {'opening':<22}{'mean':>9}{'+/-':>7}")
-    for mean, err, seq in scored:
-        print(f"  {' '.join(seq):<22}{mean:>9.0f}{err:>7.0f}")
+    scored = sorted(((m, e, seq) for seq, m, e in results), reverse=True)
+
+    print()
+    print(f"  top {min(show, len(scored))} openings")
+    print()
+    print(f"  {'opening':<26}{'mean':>9}{'+/-':>7}")
+    for mean, err, seq in scored[:show]:
+        print(f"  {' '.join(seq):<26}{mean:>9.0f}{err:>7.0f}")
+    if len(scored) > show:
+        print()
+        print("  worst 5")
+        for mean, err, seq in scored[-5:]:
+            print(f"  {' '.join(seq):<26}{mean:>9.0f}{err:>7.0f}")
+
     top = scored[0]
     close = [x for x in scored if x[0] >= top[0] - (top[1] + x[1])]
     verdict = "a real edge" if len(close) == 1 else "not separable at this sample"
-    print(f"\n  best: {' '.join(top[2])} -- {len(close)} sequence(s) within one "
+    print()
+    print(f"  best: {' '.join(top[2])} -- {len(close)} sequence(s) within one "
           f"standard error, {verdict}.")
+
+    summarise(scored, depth, fixed=len(prefix))
     return 0
 
 
@@ -224,6 +305,9 @@ def main() -> int:
     parser.add_argument("--slot", type=int, required=True)
     parser.add_argument("--teams", type=int, default=None)
     parser.add_argument("--runs", type=int, default=120)
+    parser.add_argument("--jobs", type=int, default=1)
+    parser.add_argument("--prefix", default="",
+                        help="picks already made, e.g. 'RB RB' -- pinned, not re-decided")
     parser.add_argument("--openings", type=int, default=0,
                         help="compare forced opening sequences of this many rounds")
     args = parser.parse_args()
@@ -237,7 +321,8 @@ def main() -> int:
           f"picks {snake_picks(args.slot, teams, rounds)[:6]}...\n")
     if args.openings:
         return openings(board, settings, args.slot, teams, rounds,
-                        args.runs, args.openings)
+                        args.runs, args.openings, args.jobs,
+                        tuple(args.prefix.split()))
 
     print(f"  {'strategy':<24}{'mean':>9}{'median':>9}{'worst':>9}{'best':>9}")
     results = {}
