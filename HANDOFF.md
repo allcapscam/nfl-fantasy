@@ -36,26 +36,50 @@ uv sync
 Requires [uv](https://docs.astral.sh/uv/). System Python is not used; uv pulls
 its own toolchain (currently CPython 3.14).
 
-### Four things git does NOT carry
+### Three things git does NOT carry
 
-They are gitignored on purpose — the repo is public. Copy them across, or
-recreate from the `.example` templates:
+They are gitignored on purpose — the repo is public. Recreate them from the
+`.example` templates; nothing has to be copied off the old machine.
 
 | File | What it holds | Recreate from |
 | --- | --- | --- |
-| `.env` | FantasyPros API key, Sleeper user id | `.env.example` |
-| `leagues.yaml` | The four league ids | `leagues.example.yaml` |
+| `leagues.yaml` | The four league ids and manual settings | `leagues.example.yaml` |
 | `strategies/*.yaml` | Draft strategies | `strategies/*.example.yaml` |
-| `data/` | Synced settings, cached rankings, queues | regenerate, see below |
+| `data/` | Synced settings and projections | regenerated, see below |
 
-The league ids and setup specifics are in the Claude memory store for this
-project, which syncs across machines. `data/` is fully regenerable:
+The league ids are in the Claude memory store for this project, which syncs
+across machines.
+
+**`.env` is no longer needed for a draft.** It held a FantasyPros key, and
+FantasyPros has been replaced by Sleeper's projections API, which is public and
+unauthenticated. Byes come from ESPN's public schedule endpoint. So the whole
+data pipeline runs with no keys, on any machine, in one command.
+
+### Full setup on a fresh laptop
+
+```bash
+git clone https://github.com/allcapscam/nfl-fantasy && cd nfl-fantasy
+```
+
+```bash
+uv sync && cp strategies/balanced.example.yaml strategies/balanced.yaml
+```
+
+Then write `leagues.yaml` (ids from the memory store), and:
 
 ```bash
 uv run draftbot sync
-uv run draftbot rankings --league sleeper --csv <path-to-FantasyPros-halfppr.csv>
-uv run draftbot queue --league sleeper --limit 192
 ```
+
+```bash
+uv run python scripts/pull_sleeper.py --league yahoo2 --scoring half_ppr
+```
+
+That last command is the whole data layer: projections, projected games, ADP,
+byes, and last season's actuals for the upside flag. Expect roughly *630
+players, 585 with ADP, 567 with byes*. If byes come back 0 the ESPN schedule
+lookup failed — the bye-crowding penalty silently does nothing without them, so
+do not start a draft on that.
 
 ### Verify the environment is good
 
@@ -63,7 +87,29 @@ uv run draftbot queue --league sleeper --limit 192
 uv run pytest -q && uv run ruff check .
 ```
 
-46 passing, no lint errors. If that holds, the checkout is sound.
+115 passing, no lint errors. If that holds, the checkout is sound.
+
+### Drafting on Yahoo: there is no live board feed
+
+The Sleeper tools (`scripts/live.py`, `watch.py`, `quick.py`) read the draft
+straight from Sleeper's public picks endpoint. **None of that works on Yahoo** —
+its Fantasy API is still behind the manual approval gate at
+https://sports.yahoo.com/developer/access/, and there is no unauthenticated
+alternative. On Yahoo the board has to be entered by hand.
+
+Keep `data/taken_<league>.txt` as one drafted player per line, and
+`data/roster_<league>.txt` as your own picks, then:
+
+```bash
+uv run draftbot advise --league yahoo2 --slot 5
+```
+
+Both files are read fresh on every invocation, so append and rerun. Names are
+normalised on both sides, so punctuation and suffixes do not have to match.
+
+The lesson from the Yahoo 6572 draft: reading the board cost six round trips
+and lost a pick to autodraft. Paste the whole board in one message rather than
+describing it, and keep the taken file appended as picks happen.
 
 ---
 

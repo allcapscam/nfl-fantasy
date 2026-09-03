@@ -25,6 +25,7 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from nfl_fantasy.matching import TEAM_ALIASES
 from nfl_fantasy.platforms.sleeper import SleeperAdapter
 
 BASE = "https://api.sleeper.app"
@@ -44,10 +45,34 @@ FULL_SEASON = 16
 ALWAYS_FULL_SEASON = {"DEF"}  # Sleeper's raw code, before POSITION_MAP
 
 
+#: Sleeper ships no bye weeks at all -- the field is empty for every one of its
+#: twelve thousand players. ESPN's season schedule is public, needs no key, and
+#: carries a bye week per pro team, so byes are mapped from there by team code.
+#: Doing this by hand once cost a draft its bye-crowding penalty entirely; it
+#: belongs in the pull.
+SCHEDULE = ("https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons"
+            "/{season}?view=proTeamSchedules_wl")
+
+
 def fetch(url: str, timeout: float = 90.0):
-    response = httpx.get(url, timeout=timeout)
+    response = httpx.get(url, timeout=timeout,
+                         headers={"User-Agent": "Mozilla/5.0"})
     response.raise_for_status()
     return response.json()
+
+
+def team_byes(season: str) -> dict[str, int]:
+    """Bye week per team code, from ESPN's public schedule."""
+    try:
+        data = fetch(SCHEDULE.format(season=season), timeout=60.0)
+    except httpx.HTTPError:
+        return {}
+    byes = {}
+    for team in data.get("settings", {}).get("proTeams", []):
+        code = (team.get("abbrev") or "").upper()
+        if code and team.get("byeWeek"):
+            byes[TEAM_ALIASES.get(code, code)] = team["byeWeek"]
+    return byes
 
 
 def main() -> int:
@@ -70,6 +95,7 @@ def main() -> int:
     except httpx.HTTPError:
         prior = {}
 
+    byes = team_byes(args.season)
     rows = []
     for pid, stats in projections.items():
         record = players.get(pid)
@@ -92,7 +118,9 @@ def main() -> int:
             "games": (FULL_SEASON
                       if position in ALWAYS_FULL_SEASON or not games
                       else min(int(float(games)), FULL_SEASON)),
-            "bye": record.get("bye_week") or "",
+            "bye": (record.get("bye_week")
+                    or byes.get(TEAM_ALIASES.get((record.get("team") or "").upper(),
+                                                 (record.get("team") or "").upper()), "")),
             # Sleeper's ADP uses 999 to mean "essentially undrafted".
             "adp": round(float(adp), 1) if adp and float(adp) < 900 else "",
             "prior": round(float((prior.get(pid) or {}).get(points_key) or 0), 1),
@@ -116,16 +144,16 @@ def main() -> int:
           lambda r: [r["name"], r["team"], r["position"], r["games"], r["bye"], r["points"]])
     write(f"{args.league}_adp.csv", ["name", "position", "adp"],
           lambda r: [r["name"], r["position"], r["adp"]] if r["adp"] != "" else None)
-    # Sleeper ships no bye weeks at all, so this file is built elsewhere (from
-    # ESPN's schedule endpoint). Writing an empty one over it silently disables
-    # the bye-crowding penalty, which is how a real draft ended up being offered
-    # a kicker into a week that already had four starters out.
-    byes = args.out / f"{args.league}_byes.csv"
-    if any(r["bye"] != "" for r in rows) or not byes.exists():
+    # If the schedule lookup failed, keep whatever byes are already on disk.
+    # Writing an empty file over them silently disables the bye-crowding
+    # penalty, which is how a real draft came to be offered a kicker into a
+    # week that already had four starters out.
+    byes_path = args.out / f"{args.league}_byes.csv"
+    if any(r["bye"] != "" for r in rows) or not byes_path.exists():
         write(f"{args.league}_byes.csv", ["name", "bye"],
               lambda r: [r["name"], r["bye"]] if r["bye"] != "" else None)
     else:
-        print(f"  kept existing {byes} (feed carried no byes)")
+        print(f"  kept existing {byes_path} (schedule lookup failed)")
     write(f"{args.league}_history.csv",
           ["name", "position", "prior_games", "prior_points"],
           lambda r: [r["name"], r["position"], 0 if r["prior"] < 60 else FULL_SEASON,
