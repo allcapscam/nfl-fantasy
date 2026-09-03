@@ -41,6 +41,13 @@ from nfl_fantasy.vona import (
 
 POSITIONS = ("QB", "RB", "WR", "TE", "K", "DST")
 
+#: The round from which simulated opponents will consider a kicker or defence.
+#: Rooms vary enormously here and it changes the advice: a room that waits until
+#: round 14 leaves the best kicker on the board far longer than one that starts
+#: in round 8, so guessing wrong makes the model reach for a position that was
+#: never going anywhere. Set it from what the live board is actually doing.
+KDST_FROM_ROUND = 8
+
 
 def lineup_points(roster: list[Valuation], settings: LeagueSettings) -> float:
     """Best legal starting lineup from a roster, in projected points."""
@@ -66,6 +73,18 @@ def needs(roster: list[Valuation], settings: LeagueSettings) -> set[str]:
 def opponent_pick(pool, roster, settings, rng, need_bias=0.65, noise=4):
     """A sensible manager: near the top of ADP, leaning to a position they need."""
     wanted = needs(roster, settings)
+
+    # Kickers and defences only late, as real rooms do. This has to be applied
+    # to the whole pool rather than to the shortlist: by the middle rounds the
+    # top of the ADP board *is* kickers and defences, so filtering a four-man
+    # slice leaves nothing and the fallback takes one regardless. That made the
+    # round gate inert -- every setting predicted the first kicker at the same
+    # pick -- and the model could not represent a room that waits.
+    early = len(roster) + 1 < KDST_FROM_ROUND
+    if early:
+        candidates = [v for v in pool if v.player.position not in ("K", "DST")]
+        pool = candidates or pool
+
     by_adp = sorted((v for v in pool if v.player.adp), key=lambda v: v.player.adp)
     if not by_adp:
         by_adp = sorted(pool, key=lambda v: -v.points)
@@ -74,11 +93,6 @@ def opponent_pick(pool, roster, settings, rng, need_bias=0.65, noise=4):
         fits = [v for v in by_adp[: noise * 4] if v.player.position in wanted]
         if fits:
             shortlist = fits[:noise]
-    # Kickers and defences only late, as real rooms do.
-    late = len(roster) >= len(settings.starting_slots) - 2
-    if not late:
-        filtered = [v for v in shortlist if v.player.position not in ("K", "DST")]
-        shortlist = filtered or shortlist
     return rng.choice(shortlist)
 
 
@@ -205,7 +219,10 @@ def _score_sequence(job):
     return seq, statistics.mean(scores), statistics.stdev(scores) / (runs ** 0.5)
 
 
-def valid_openings(settings, depth, prefix=(), core=("RB", "WR", "TE", "QB")):
+DEFAULT_CORE = ("RB", "WR", "TE", "QB")
+
+
+def valid_openings(settings, depth, prefix=(), core=DEFAULT_CORE):
     """Every opening of `depth` picks you could actually start.
 
     `prefix` pins the picks already made, so the sweep answers the question you
@@ -226,7 +243,7 @@ def summarise(scored, depth, fixed=0):
     more stable than any single sequence, because each average is built from
     hundreds of drafts rather than a hundred.
     """
-    cols = ("RB", "WR", "TE", "QB")
+    cols = sorted({p for _, _, seq in scored for p in seq})
     print()
     print("  value of each position by round, averaged over every opening")
     print()
@@ -251,7 +268,7 @@ def summarise(scored, depth, fixed=0):
 
 
 def openings(board, settings, slot, teams, rounds, runs, depth,
-             jobs=1, prefix=(), show=25):
+             jobs=1, prefix=(), core=DEFAULT_CORE, show=25):
     """Which opening sequence of positions ends up with the best lineup?
 
     Every sequence runs against the same numbered seeds, so the comparison is
@@ -260,7 +277,7 @@ def openings(board, settings, slot, teams, rounds, runs, depth,
     small next to run-to-run noise, so the standard error is reported -- without
     it these numbers invite conclusions they cannot support.
     """
-    seqs = valid_openings(settings, depth, prefix)
+    seqs = valid_openings(settings, depth, prefix, core)
     jobs = max(1, min(jobs, len(seqs)))
     pinned = f", first {len(prefix)} pinned to {' '.join(prefix)}" if prefix else ""
     print(f"  opening {depth} picks, {runs} runs each, {len(seqs)} sequences, "
@@ -306,6 +323,8 @@ def main() -> int:
     parser.add_argument("--teams", type=int, default=None)
     parser.add_argument("--runs", type=int, default=120)
     parser.add_argument("--jobs", type=int, default=1)
+    parser.add_argument("--core", default=" ".join(DEFAULT_CORE),
+                        help="positions the sweep may choose from")
     parser.add_argument("--prefix", default="",
                         help="picks already made, e.g. 'RB RB' -- pinned, not re-decided")
     parser.add_argument("--openings", type=int, default=0,
@@ -322,7 +341,7 @@ def main() -> int:
     if args.openings:
         return openings(board, settings, args.slot, teams, rounds,
                         args.runs, args.openings, args.jobs,
-                        tuple(args.prefix.split()))
+                        tuple(args.prefix.split()), tuple(args.core.split()))
 
     print(f"  {'strategy':<24}{'mean':>9}{'median':>9}{'worst':>9}{'best':>9}")
     results = {}

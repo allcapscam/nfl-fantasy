@@ -19,9 +19,9 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from nfl_fantasy.advisor import advise, load_players  # noqa: E402
-from nfl_fantasy.store import load_settings  # noqa: E402
-from nfl_fantasy.vona import next_pick_after, snake_picks  # noqa: E402
+from nfl_fantasy.advisor import advise, load_players
+from nfl_fantasy.store import load_settings
+from nfl_fantasy.vona import next_pick_after, snake_picks
 
 BASE = "https://api.sleeper.app/v1/draft"
 
