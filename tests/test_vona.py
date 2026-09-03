@@ -122,13 +122,39 @@ def test_saturated_positions_stop_competing():
 # -- estimating the run ------------------------------------------------------
 
 
-def test_runs_from_adp_counts_the_window():
-    adp = {"a": 5.0, "b": 12.0, "c": 14.0, "d": 25.0}
-    positions = {"a": "RB", "b": "RB", "c": "WR", "d": "WR"}
-    runs = runs_from_adp(adp, positions, start=10, end=20)
-    assert runs["RB"] == 1.0  # only b falls in (10, 20]
-    assert runs["WR"] == 1.0  # only c
+def test_runs_from_adp_reads_the_front_of_the_market_queue():
+    """Roughly one player per pick, taken from the top of what is available."""
+    adp = {f"p{i}": 20.0 + i for i in range(12)}
+    positions = {f"p{i}": ("RB" if i < 5 else "WR") for i in range(12)}
+
+    runs = runs_from_adp(adp, positions, start=20, end=25)
+    assert 4.0 < sum(runs.values()) < 6.0   # about five picks' worth
+    assert runs["RB"] > runs["WR"]          # the front of the queue is backs
     assert runs["QB"] == 0.0
+
+    # A wider window consumes more of the board.
+    wider = runs_from_adp(adp, positions, start=20, end=30)
+    assert sum(wider.values()) > sum(runs.values())
+    assert runs_from_adp(adp, positions, start=20, end=20) == dict.fromkeys(
+        ("QB", "RB", "WR", "TE", "K", "DST"), 0.0
+    )
+
+
+def test_a_player_already_past_his_adp_is_the_likeliest_to_go():
+    """Regression: the window test scored exactly these players as zero.
+
+    A tight end at ADP 26 was still there at pick 33 and went at 27 the moment
+    the window opened; a back at ADP 28 went at 34. Both times the model said
+    the run at their position was negligible, because their ADP sat *behind*
+    the window rather than inside it.
+    """
+    adp = {"fallen": 26.0} | {f"wr{i}": 40.0 + i for i in range(8)}
+    positions = {"fallen": "TE"} | {f"wr{i}": "WR" for i in range(8)}
+
+    # The old rule: 33 < 26 <= 40 is false, so he contributed nothing at all.
+    assert not 33 < adp["fallen"] <= 40
+    runs = runs_from_adp(adp, positions, start=33, end=40)
+    assert runs["TE"] > 0.8
 
 
 def test_team_at_pick_follows_the_snake():
@@ -262,3 +288,103 @@ def test_the_best_player_still_matches_the_two_pick_proof():
     run = 2.0
     best = candidates(pool, {"RB": run}, LEAGUE)[0]
     assert best.cost_of_waiting == pool[0].vor - interpolate([x.vor for x in pool], run)
+
+
+# -- the flex slot is its own scale ------------------------------------------
+
+
+def test_a_flex_seat_is_valued_on_the_pooled_replacement():
+    """Regression from pick 64: positional VOR inverts the flex choice.
+
+    Tight end replacement is far below receiver replacement, so a tight end's
+    VOR flatters him. Asked to fill a flex slot the model preferred a 158-point
+    tight end to a 176-point receiver -- eighteen fewer points in the lineup
+    every week -- because it compared each against his own position's baseline
+    rather than against the one seat they were actually competing for.
+    """
+    from nfl_fantasy.platforms.base import Player as P
+
+    def v(name, position, points, replacement):
+        player = P(id=name, name=name, position=position, projected_points=points)
+        return Valuation(player=player, points=points, games=16, adjusted=points,
+                         replacement=replacement, flex_replacement=150.0)
+
+    tight_end = v("LaPorta", "TE", 158.5, 129.5)
+    receiver = v("Washington", "WR", 176.4, 150.9)
+
+    # On positional VOR the tight end looks better. He is not: for one shared
+    # seat the only thing that counts is points above what else could fill it.
+    assert tight_end.vor > receiver.vor
+    assert receiver.flex_vor > tight_end.flex_vor
+
+    # Every dedicated slot is full, so the only seat open is the flex.
+    ranked = candidates([tight_end, receiver], {"TE": 1.0, "WR": 1.0}, LEAGUE,
+                        roster_counts={"QB": 1, "RB": 2, "WR": 2, "TE": 1},
+                        open_slots=["FLEX"])
+    assert all(c.role == "flex" for c in ranked)
+
+    # Both are now measured against the same baseline, so their values are
+    # directly comparable -- which is what positional VOR destroyed.
+    by_name = {c.valuation.player.name: c for c in ranked}
+    assert by_name["Washington"].value == receiver.flex_vor
+    assert by_name["LaPorta"].value == tight_end.flex_vor
+    assert by_name["Washington"].value > by_name["LaPorta"].value
+
+    # Ranking by the steeper drop stays correct for choosing a position; what
+    # was broken was comparing drops measured on two different scales.
+    assert all(c.expected_next == c.value - c.cost_of_waiting for c in ranked)
+
+
+def test_slot_role_tells_the_three_seats_apart():
+    from nfl_fantasy.vona import slot_role
+
+    empty: dict[str, int] = {}
+    assert slot_role("RB", empty, LEAGUE) == "dedicated"
+    # Two dedicated RB slots filled, so the third back takes the flex.
+    assert slot_role("RB", {"RB": 2}, LEAGUE) == "flex"
+    # Flex now occupied by that third back, so a fourth is bench.
+    assert slot_role("RB", {"RB": 3}, LEAGUE) == "bench"
+    # One starting QB and no flex that accepts him.
+    assert slot_role("QB", {"QB": 1}, LEAGUE) == "bench"
+    # Real open slots win over counting.
+    assert slot_role("WR", {"WR": 9}, LEAGUE, open_slots=["WR"]) == "dedicated"
+    assert slot_role("WR", {}, LEAGUE, open_slots=["FLEX"]) == "flex"
+    assert slot_role("K", {}, LEAGUE, open_slots=["FLEX"]) == "bench"
+
+
+def test_players_competing_for_one_flex_seat_share_a_baseline():
+    """The two-pick derivation does not survive a shared slot.
+
+    Cost-of-waiting assumes the slot is still open at your next turn. That holds
+    when a back and a receiver fill different dedicated slots. It fails when
+    both would fill the same flex: taking either one closes it, so the position
+    you passed on is a bench player next time, not a starter.
+
+    Measured per position, the tight end below wins on a steeper drop while
+    being worth eighteen fewer points in the only seat available -- which is the
+    live-draft call this corrects.
+    """
+    from nfl_fantasy.platforms.base import Player as P
+
+    def v(name, position, points, replacement):
+        player = P(id=name, name=name, position=position, projected_points=points)
+        return Valuation(player=player, points=points, games=16, adjusted=points,
+                         replacement=replacement, flex_replacement=143.4)
+
+    board = [
+        v("Washington", "WR", 176.4, 150.9),
+        v("Odunze", "WR", 173.9, 150.9),
+        v("LaPorta", "TE", 158.5, 129.5),   # steep drop behind him
+        v("Spare TE", "TE", 100.0, 129.5),
+    ]
+    have = {"QB": 1, "RB": 2, "WR": 2, "TE": 1}
+    ranked = candidates(board, {"WR": 1.0, "TE": 1.0}, LEAGUE, have,
+                        open_slots=["FLEX"])
+
+    assert ranked[0].valuation.player.name == "Washington"
+    # Every flex candidate is measured against the same pooled alternative.
+    flex = [c for c in ranked if c.role == "flex"]
+    assert len({round(c.expected_next, 6) for c in flex}) == 1
+    # And the tight end's steep positional drop no longer buys him anything.
+    laporta = next(c for c in flex if c.valuation.player.name == "LaPorta")
+    assert ranked[0].cost_of_waiting > laporta.cost_of_waiting

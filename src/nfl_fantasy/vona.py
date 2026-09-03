@@ -21,11 +21,12 @@ on positions far harder than ADP implies.
 
 from __future__ import annotations
 
+import math
 from collections import Counter
 from dataclasses import dataclass
 
 from nfl_fantasy.settings import FLEX_SLOTS, LeagueSettings, slot_accepts
-from nfl_fantasy.valuation import Valuation
+from nfl_fantasy.valuation import FLEXIBLE, Valuation
 
 POSITIONS = ("QB", "RB", "WR", "TE", "K", "DST")
 
@@ -144,16 +145,45 @@ def interpolate(values: list[float], k: float) -> float:
     return values[low] * (1 - fraction) + values[low + 1] * fraction
 
 
+#: How sharply the market's queue is cut off at the end of the window. A hard
+#: cut says the (n+1)th player is certain to survive, which no ADP supports.
+ADP_TAPER = 3.0
+
+
 def runs_from_adp(
     adp: dict[str, float], positions: dict[str, str], start: int, end: int
 ) -> dict[str, float]:
-    """How many of each position ADP expects to go in (start, end]."""
+    """Which positions the market takes over the next `end - start` picks.
+
+    Counting the players whose ADP falls inside the window looks right and is
+    not: it scores everyone already *past* his ADP as zero. But a player still
+    on the board after the market said he would go is the one most likely to go
+    next, not the least. Two were lost to this in a single draft -- a tight end
+    at ADP 26 taken at pick 27, and a back at ADP 28 taken at 34 -- while the
+    model reported almost no run at either position.
+
+    So rank whoever is actually available by ADP and read off the front of that
+    queue. A fallen player sorts to the top, which is exactly where the market
+    has him. The taper softens the boundary instead of cutting it, and makes the
+    weights sum to roughly the number of picks in the window.
+
+    `adp` must contain only available players; a drafted one would hold a place
+    in the queue he has already left.
+    """
     runs = dict.fromkeys(POSITIONS, 0.0)
-    for name, value in adp.items():
-        if start < value <= end:
-            position = positions.get(name)
-            if position in runs:
-                runs[position] += 1.0
+    window = max(0, end - start)
+    if not window:
+        return runs
+
+    ordered = sorted(adp.items(), key=lambda item: item[1])
+    spread = max(1.0, window / ADP_TAPER)
+    for index, (name, _) in enumerate(ordered):
+        weight = 1.0 / (1.0 + math.exp((index - window + 0.5) / spread))
+        if weight < 0.01:
+            break
+        position = positions.get(name)
+        if position in runs:
+            runs[position] += weight
     return runs
 
 
@@ -243,6 +273,41 @@ def starts_immediately(
     return roster_counts.get(position, 0) < settings.max_startable(position)
 
 
+def slot_role(
+    position: str,
+    roster_counts: dict[str, int],
+    settings: LeagueSettings,
+    open_slots: list[str] | None = None,
+) -> str:
+    """Which seat this player would take: "dedicated", "flex", or "bench".
+
+    The three are valued on different scales, so they have to be told apart. A
+    dedicated slot is measured against the position's own replacement; a flex
+    seat against the pooled flex replacement, since RB, WR and TE compete for
+    it; a bench spot against raw points with no games backfill.
+    """
+    if open_slots is not None:
+        if any(slot == position for slot in open_slots):
+            return "dedicated"
+        if any(slot in FLEX_SLOTS and slot_accepts(slot, position)
+               for slot in open_slots):
+            return "flex"
+        return "bench"
+
+    # No roster to inspect: infer from counts. Dedicated slots fill first, then
+    # any overflow at a flex-eligible position occupies the flex.
+    if roster_counts.get(position, 0) < settings.starters_at(position):
+        return "dedicated"
+    flex_slots = sum(1 for slot in settings.starting_slots if slot in FLEX_SLOTS)
+    overflow = sum(
+        max(0, roster_counts.get(other, 0) - settings.starters_at(other))
+        for other in FLEXIBLE
+    )
+    if position in FLEXIBLE and overflow < flex_slots:
+        return "flex"
+    return "bench"
+
+
 def lineup_multiplier(
     position: str,
     roster_counts: dict[str, int],
@@ -321,6 +386,7 @@ class Candidate:
     bye_penalty: float = 1.0
     bye_note: str | None = None
     market_note: str | None = None
+    role: str = "dedicated"
 
     @property
     def position(self) -> str:
@@ -332,7 +398,14 @@ class Candidate:
 
     @property
     def value(self) -> float:
-        """Value in the role this player would actually fill."""
+        """Value in the role this player would actually fill.
+
+        Three scales, because three different things are being replaced: the
+        position's own replacement for a dedicated slot, the pooled flex
+        replacement for a flex seat, and raw points for a bench spot.
+        """
+        if self.role == "flex":
+            return self.valuation.flex_vor
         return self.valuation.vor if self.starts else self.valuation.bench_vor
 
     @property
@@ -386,17 +459,41 @@ def candidates(
     for valuation in available:
         by_position.setdefault(valuation.player.position, []).append(valuation)
 
+    # Candidates competing for the flex share one seat, so they share one
+    # counterfactual. The two-pick derivation behind cost-of-waiting assumes the
+    # slot is still open at your next pick -- true when a back and a receiver
+    # are filling *different* dedicated slots, false when both are filling the
+    # same flex. Taking either one fills it, so the honest question is not whose
+    # position degrades faster but who is worth more in the seat. Pooling the
+    # baseline across every flex-eligible position is what makes it that.
+    flex_pool = sorted(
+        (v for p in FLEXIBLE for v in by_position.get(p, [])),
+        key=lambda v: v.flex_vor,
+        reverse=True,
+    )
+    flex_run = sum(runs.get(p, 0.0) for p in FLEXIBLE)
+    flex_baseline = interpolate([v.flex_vor for v in flex_pool], flex_run)
+
     results: list[Candidate] = []
     for position, pool in by_position.items():
         if roster_counts.get(position, 0) >= roster_cap(position, settings):
             continue
         pool.sort(key=lambda v: v.vor, reverse=True)
         run = runs.get(position, 0.0)
-        starts = starts_immediately(position, roster_counts, settings, open_slots)
-        # Baseline on the same scale as the candidates it is compared against:
-        # bench value if this player would sit, starter value if he would play.
-        scale = [(v.vor if starts else v.bench_vor) for v in pool]
-        baseline = interpolate(scale, run)
+        role = slot_role(position, roster_counts, settings, open_slots)
+        # Baseline on the same scale as the candidates it is compared against.
+        # Mixing scales was a real bug: bench candidates measured against
+        # starter baselines all showed one constant gap, carrying no ranking
+        # information at all.
+        if role == "flex":
+            # Sorted on the flex scale too, so `depth` means what it says.
+            pool.sort(key=lambda v: v.flex_vor, reverse=True)
+            scale = None            # the shared flex baseline is used instead
+        elif role == "dedicated":
+            scale = [v.vor for v in pool]
+        else:
+            scale = [v.bench_vor for v in pool]
+        baseline = flex_baseline if scale is None else interpolate(scale, run)
         for depth, valuation in enumerate(pool[:per_position]):
             results.append(
                 Candidate(
@@ -404,6 +501,7 @@ def candidates(
                     depth=depth,
                     expected_next=baseline,
                     runs=run,
+                    role=role,
                     lineup=lineup_multiplier(
                         position, roster_counts, settings, open_slots
                     ),

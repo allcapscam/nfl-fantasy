@@ -174,6 +174,15 @@ has its backs, another run on backs is less likely, not more. A momentum model
 gets that exactly backwards. ADP leads in the early rounds, where picks are
 best-player-available, and roster need takes over by the middle rounds.
 
+The ADP half reads the *front of the market's queue* rather than counting whose
+ADP falls inside the window. Counting the window looks right and is not: it
+scores everyone already past his ADP as zero, when a player still on the board
+after the market said he would go is the likeliest to go next, not the least.
+Two were lost to that in one draft -- a tight end at ADP 26 taken at pick 27,
+a back at ADP 28 taken at 34 -- while the model reported almost no run at
+either position. Ranking whoever is available by ADP puts a fallen player at
+the top of the queue, which is where the market has him.
+
 The arithmetic, precisely. A candidate's cost of waiting is
 
     (value x upside x lineup x bye) - baseline
@@ -187,6 +196,25 @@ his value rather than the gap; scaling the gap would silently credit him for a
 share of the replacement he is measured against. Every player at a position
 shares one baseline, so deeper names rank lower because they are worth less
 rather than because they are compared against something further down the list.
+
+**A flex slot is not a positional slot, and the difference matters.** A
+dedicated slot only one position can fill makes that position's own replacement
+the right baseline. A flex slot is shared, so backs, receivers and tight ends
+are measured against one pooled replacement -- the best flex-eligible player who
+would not start anywhere. Positional VOR inverts real choices here, because
+tight end replacement is low and so flatters every tight end: in a live draft
+the model rated a 158-point tight end above a 176-point receiver for a flex
+seat, eighteen fewer points in the lineup every week.
+
+The two-pick derivation also stops holding once the slot is shared. It assumes
+the slot is still open at your next turn, which is true when a back and a
+receiver fill *different* dedicated slots and false when both would fill the
+same flex -- taking either one closes it, so the position you passed on is a
+bench player next time, not a starter. Flex candidates therefore share a single
+pooled baseline, which makes the ranking turn on who is worth more in the seat
+rather than on whose position degrades faster. The `advise` table prints the
+seat and the value actually used, because reading positional VOR next to a cost
+derived from a different scale is precisely the mistake that caused this.
 
 It recommends a **shortlist of three to five players spanning at least two
 positions**, not a single name. That needs a per-player version of the same

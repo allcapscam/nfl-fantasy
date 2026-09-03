@@ -39,11 +39,29 @@ class Valuation:
     games: int | None
     adjusted: float
     replacement: float
+    flex_replacement: float = 0.0
 
     @property
     def vor(self) -> float:
         """Value over replacement -- the number to compare across positions."""
         return self.adjusted - self.replacement
+
+    @property
+    def flex_vor(self) -> float:
+        """Value when the slot being filled is the flex.
+
+        A dedicated slot only one position can fill makes that position's own
+        replacement the right baseline. A flex slot is different: running backs,
+        receivers and tight ends all compete for the *same* seat, so the honest
+        comparison is against the best flex-eligible player who would not start
+        anywhere -- one number, shared by all three.
+
+        Using positional VOR here inverts real choices. Tight end replacement is
+        low, so a tight end's VOR flatters him: in a live draft the model rated
+        a 158-point tight end above a 176-point receiver for a flex slot, which
+        would have started eighteen fewer points every week.
+        """
+        return self.adjusted - self.flex_replacement
 
     @property
     def bench_vor(self) -> float:
@@ -147,6 +165,28 @@ def replacement_levels(
     return levels, depth
 
 
+def flex_replacement_level(
+    settings: LeagueSettings, players: list[Player]
+) -> float:
+    """Points of the best flex-eligible player who would not start anywhere.
+
+    Backs, receivers and tight ends are pooled and ranked together, because for
+    a flex seat that is exactly the competition. The cut comes after every
+    dedicated RB/WR/TE slot in the league plus every flex slot; the next player
+    down is what you settle for if you spend the seat elsewhere.
+    """
+    pool = sorted(
+        (p.projected_points or 0.0 for p in players if p.position in FLEXIBLE),
+        reverse=True,
+    )
+    if not pool:
+        return 0.0
+    dedicated = sum(settings.starters_at(position) for position in FLEXIBLE)
+    flex_slots = sum(1 for slot in settings.starting_slots if slot in FLEX_SLOTS)
+    cut = (dedicated + flex_slots) * settings.teams
+    return pool[min(cut, len(pool) - 1)]
+
+
 def value_board(settings: LeagueSettings, players: list[Player]) -> list[Valuation]:
     """Every player, valued above replacement, best first.
 
@@ -156,6 +196,7 @@ def value_board(settings: LeagueSettings, players: list[Player]) -> list[Valuati
     pass would need the answer before it could be computed.
     """
     levels, depth = replacement_levels(settings, players)
+    flex_level = flex_replacement_level(settings, players)
 
     by_position: dict[str, list[Player]] = {}
     for player in players:
@@ -182,6 +223,7 @@ def value_board(settings: LeagueSettings, players: list[Player]) -> list[Valuati
                 games=player.games,
                 adjusted=adjusted_points(player, rate),
                 replacement=levels.get(player.position, 0.0),
+                flex_replacement=flex_level,
             )
         )
     board.sort(key=lambda v: v.vor, reverse=True)

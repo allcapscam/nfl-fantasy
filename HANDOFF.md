@@ -111,6 +111,49 @@ The lesson from the Yahoo 6572 draft: reading the board cost six round trips
 and lost a pick to autodraft. Paste the whole board in one message rather than
 describing it, and keep the taken file appended as picks happen.
 
+### Simulating, before and during
+
+Two tools, and the distinction is what keeps them fast enough to use.
+
+**Before the draft** — which opening shape wins from your slot. Replays whole
+drafts, so it is minutes, not seconds:
+
+```bash
+uv run python scripts/simulate.py --slot 5 --runs 100 --openings 5 --jobs 16
+```
+
+Add `--prefix "RB RB"` to pin picks already made, so it answers the question
+still open instead of re-deciding rounds that are over.
+
+**During the draft** — plays out only what remains, from the live board. Both
+modes work off the taken file, so both work on Yahoo:
+
+```bash
+uv run python scripts/quick.py --league yahoo2 --slot 5 --runs 30
+```
+
+```bash
+uv run python scripts/quick.py --league yahoo2 --slot 5 --next 3 --runs 20
+```
+
+The first ranks individual players for this pick (~3s). The second sweeps
+position sequences for your next three (~25s) and prints a per-pick average,
+which is the part that survives the noise — individual sequences sit inside
+each other's error bars far more often than they differ.
+
+`--kdst-round N` sets the round from which simulated opponents will take a
+kicker or defence. **Check this against the room**: the default assumes round
+8, and a room that waits until 14 leaves the best kicker on the board for six
+more rounds while spending those picks on the backup quarterbacks and bench
+skill players you wanted. Count the kickers and defences drafted before
+trusting the output.
+
+A sweep that returns everything inside one standard error is telling you the
+decision does not matter — say so rather than ranking noise. That happened for
+rounds 7–11 of the Sleeper draft: 122,000 simulated drafts, an 8-point spread,
+because by then the starting lineup was full and the sweep was scoring bench
+players that never enter the total.
+
 ---
 
 ## Architecture

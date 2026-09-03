@@ -218,7 +218,14 @@ def cmd_advise(registry: LeagueRegistry, key: str, slot: int,
         console.print("[yellow]Nothing left to recommend.[/yellow]")
         return 1
 
-    table = Table("#", "Player", "Pos", "VOR", "If you wait", "Cost", "Note")
+    # "Value" is the number the recommendation is actually built from, which
+    # is not always VOR: a player filling the flex is measured against the
+    # pooled flex replacement, and a bench player against raw points. Printing
+    # positional VOR next to a cost derived from a different scale is how a
+    # tight end came to look like the best flex option while being worth
+    # eighteen fewer points in the seat. The role column says which is in use.
+    table = Table("#", "Player", "Pos", "Seat", "Value", "If you wait", "Cost",
+                  "Note")
     for index, candidate in enumerate(result.shortlist, start=1):
         v = candidate.valuation
         notes = []
@@ -234,7 +241,8 @@ def cmd_advise(registry: LeagueRegistry, key: str, slot: int,
             str(index),
             f"{v.player.name} ({v.player.team or '-'})",
             candidate.position,
-            f"{v.vor:.1f}",
+            candidate.role,
+            f"{candidate.value:.1f}",
             f"{candidate.expected_next:.1f}",
             f"{candidate.cost_of_waiting:.1f}",
             ", ".join(notes) or "",
