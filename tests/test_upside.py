@@ -21,7 +21,10 @@ LEAGUE = LeagueSettings(
 
 def val(name, position, vor):
     player = Player(id=name, name=name, position=position, projected_points=vor)
-    return Valuation(player=player, points=vor, games=16, adjusted=vor, replacement=0.0)
+    # The flex bar is stated even where a test does not care about it: asking
+    # for a seat a valuation has no replacement level for now raises.
+    return Valuation(player=player, points=vor, games=16, adjusted=vor,
+                     replacement=0.0, flex_replacement={"FLEX": 0.0})
 
 
 # -- the premium -------------------------------------------------------------

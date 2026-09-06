@@ -19,6 +19,7 @@ from nfl_fantasy.platforms import yahoo_auth
 from nfl_fantasy.platforms.base import Player
 from nfl_fantasy.platforms.sleeper import SleeperAdapter
 from nfl_fantasy.platforms.yahoo import YahooAdapter
+from nfl_fantasy.settings import LeagueSettings
 from nfl_fantasy.sources.csv_source import CsvRankingSource
 from nfl_fantasy.sources.fantasypros import FantasyProsSource
 from nfl_fantasy.store import load_rankings, load_settings, save_rankings, save_settings
@@ -268,6 +269,12 @@ def cmd_advise(registry: LeagueRegistry, key: str, slot: int,
     return 0
 
 
+def warn_conflicts(strategy: Strategy, settings: LeagueSettings) -> None:
+    """Say when a strategy is fighting the league it is pointed at."""
+    for problem in strategy.conflicts_with(settings):
+        console.print(f"[yellow]strategy vs league: {problem}[/yellow]")
+
+
 def cmd_show(registry: LeagueRegistry, key: str) -> int:
     ref = registry.get(key)
     strategy = Strategy.load(ref.strategy)
@@ -275,6 +282,7 @@ def cmd_show(registry: LeagueRegistry, key: str) -> int:
 
     console.print(f"[bold]{ref.key}[/bold] -- {settings.describe()} "
                   f"| strategy: {strategy.name}")
+    warn_conflicts(strategy, settings)
     table = Table("Round", "Prefer", "Avoid", "Gated off")
     rounds = max(
         [p.round for p in strategy.round_plan]
@@ -339,6 +347,7 @@ def cmd_queue(registry: LeagueRegistry, key: str, limit: int, out: Path | None) 
         if not board:
             return 1
 
+    warn_conflicts(strategy, settings)
     ranked = rank_queue(strategy, settings, board)
 
     destination = out or Path(f"data/queue_{key}.csv")

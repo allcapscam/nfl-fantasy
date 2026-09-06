@@ -3,7 +3,7 @@
 Pick-up notes for continuing this project on another machine. Written 2026-08-20.
 
 **Repo:** https://github.com/allcapscam/nfl-fantasy (public)
-**State:** clean and pushed. 60 tests passing, ruff clean.
+**State:** clean and pushed. 133 tests passing, ruff clean.
 
 ---
 
@@ -72,7 +72,7 @@ uv run draftbot sync
 ```
 
 ```bash
-uv run python scripts/pull_sleeper.py --league yahoo2 --scoring half_ppr
+uv run python scripts/pull_sleeper.py --league yahoo2 --scoring half_ppr --adp 2qb
 ```
 
 That last command is the whole data layer: projections, projected games, ADP,
@@ -81,13 +81,19 @@ players, 585 with ADP, 567 with byes*. If byes come back 0 the ESPN schedule
 lookup failed — the bye-crowding penalty silently does nothing without them, so
 do not start a draft on that.
 
+**`--adp 2qb` is not optional in a superflex league.** It defaults to the
+`--scoring` board, which is single-QB ADP: that has the QB1 going in round three
+and every quarterback tens of picks later than a superflex room takes him. The
+whole market prior is wrong from the first pick. The pull now prints which ADP
+board it read — check the line.
+
 ### Verify the environment is good
 
 ```bash
 uv run pytest -q && uv run ruff check .
 ```
 
-115 passing, no lint errors. If that holds, the checkout is sound.
+133 passing, no lint errors. If that holds, the checkout is sound.
 
 ### Drafting on Yahoo: there is no live board feed
 
@@ -209,7 +215,28 @@ Each cost real debugging. All are guarded in code with regression tests.
    undocumented, and a wrong one would silently mis-score a whole league. The
    adapter pulls `game/nfl/stat_categories` and matches on "Receptions".
 
-7. **The queue is not the board.** It skips the reach limit (a per-pick idea),
+7. **A superflex seat is a quarterback seat, and nothing knew that.** Flex
+   allocation drew from one hardcoded `RB/WR/TE` list for *every* flex slot, so
+   in a league with both `W/R/T` and `Q/W/R/T` the twelve superflex seats went
+   to backs and receivers. Quarterbacks were therefore replaced at QB12 in a
+   league that starts twenty-four of them, and RB/WR replacement was pushed
+   twelve places too deep. On a realistic board **no quarterback appeared in the
+   top twelve** of a format where the QB1 is a first-round pick. Each seat now
+   draws only from what it accepts, and each *kind* of seat has its own pooled
+   replacement -- the `Q/W/R/T` pool sits about a hundred points above the
+   `W/R/T` one, so the seat is named (`SUPER_FLEX` / `FLEX`) in the advise table
+   rather than shown as a generic "flex". Nothing hardcodes which positions are
+   flexible any more; it is read off the league's slots.
+
+8. **The flex bar was found by the wrong arithmetic even in one-flex leagues.**
+   It merged RB/WR/TE by points and indexed at `(dedicated + flex) x teams`,
+   which assumes the league's starters are the top of that merged list. A
+   mandatory TE slot forces ten tight ends into lineups while better receivers
+   sit, so the index lands too deep. The bar is now the best player who actually
+   starts nowhere -- 13.5 points higher in one league, which had been inflating
+   every flex candidate against dedicated and bench ones.
+
+9. **The queue is not the board.** It skips the reach limit (a per-pick idea),
    demotes gated players rather than dropping them (else you lose the TE1
    forever), and promotes required starters into the draft — consensus ranks put
    the first kicker past the last pick, which would end the draft with an empty
@@ -218,6 +245,53 @@ Each cost real debugging. All are guarded in code with regression tests.
 ---
 
 ## Where things stand
+
+### The last draft: Yahoo superflex, 12 teams, slot 2
+
+Settings read off the league page, since Yahoo's API is still gated. This is the
+`leagues.yaml` block for it — the repo cannot carry the file, so this is the
+copy that survives:
+
+```yaml
+leagues:
+  yahoo2:
+    platform: yahoo
+    league_id: "<from the football.fantasysports.yahoo.com/f1/<ID> URL>"
+    strategy: strategies/superflex.yaml
+    manual:
+      name: "Yahoo superflex"
+      teams: 12
+      scoring: half_ppr
+      te_premium: 0.0
+      pass_td: 4.0
+      roster: [QB, WR, WR, WR, RB, RB, TE, FLEX, SUPER_FLEX, K, DST,
+               BN, BN, BN, BN, BN]
+```
+
+`sync` will report `platform unavailable ... using manual settings` and then
+`12-team half_ppr superflex` — if it does not say **superflex**, the roster list
+is wrong and every number downstream is too.
+
+What matters about this league, in order:
+
+- **`Q/W/R/T` is a superflex seat.** Two quarterbacks start, so twenty-four go
+  in a twelve-team room. The QB1 is a legitimate first-round pick and the drop
+  from the QB12 to the QB24 is the steepest cliff on the board. Findings 7 and 8
+  below are the four places the model got this wrong before it was fixed.
+- **Sixteen rounds**: eleven starters (`QB WR WR WR RB RB TE FLEX SUPER_FLEX K
+  DST`) plus five bench. The two IR slots are not drafted.
+- **Half-PPR, 4-point passing TDs**, −1 per interception, −2 per fumble lost,
+  6-point rushing/receiving TDs, 25 yards per passing point. That is Sleeper's
+  own default scoring, so `pts_half_ppr` from the pull is a fair match for this
+  league rather than an approximation.
+- **Three receivers start, two backs.** Receiver demand is a round deeper than
+  the leagues already drafted.
+- **Six of twelve make the playoffs.** Half the room, which is a higher rate than
+  the 4-of-10 the ceiling premium was reasoned about — so ceiling is worth
+  slightly less here than in those leagues, not more.
+- Use `strategies/superflex.yaml`, not `balanced.yaml`. Pointed at this league
+  the balanced strategy trips two conflict warnings, and both are real: it gates
+  QB until round 4 and avoids QB in round 1.
 
 ### Working and verified against the real league
 
@@ -234,8 +308,6 @@ TE premium), snake, 16 rounds, 90s picks, roster `QB RB RB WR WR TE FLEX K DST`
 
 - **ESPN adapter** — needs `espn_s2` + `SWID` cookies from
   a logged-in browser session. The last platform left.
-- **Strategy/format conflict warnings** — nothing catches a strategy gating QB
-  until round 6 pointed at a superflex league.
 - **Auction and keeper/dynasty formats** — the engine assumes a snake draft.
 
 ### Open items for the user

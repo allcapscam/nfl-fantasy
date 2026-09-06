@@ -1,0 +1,60 @@
+# Copy to strategies/superflex.yaml and edit.
+#
+# For a league with a Q/W/R/T seat. Two quarterbacks start, so the position is
+# not a luxury to be gated off -- it is the scarcest thing on the board. In a
+# 12-team superflex, 24 quarterbacks start against roughly 32 who are startable
+# at all, so the drop from the QB12 to the QB24 is the steepest cliff in the
+# draft. `draftbot show` will warn if a strategy fights its league this way.
+#
+# `advise` does not read this file -- the VONA model works from the league's own
+# replacement levels. This drives `queue` and `board`, which is what runs if you
+# are away from the keyboard.
+
+name: "superflex"
+
+# Hard constraints. Never violated.
+#
+# No QB gate at all: in this format the QB1 is a legitimate first-round pick,
+# and waiting past round 6 for your second is how you end up starting a streamer
+# in the Q/W/R/T seat all year.
+earliest_round:
+  K: 15
+  DST: 14
+
+max_per_position:
+  QB: 3        # two start; the third is the bye/injury cover the seat demands
+  TE: 2
+  K: 1
+  DST: 1
+
+# Soft preferences. These rank the players that passed the constraints.
+position_weight:
+  QB: 1.05
+  RB: 1.0
+  WR: 1.0
+
+round_plan:
+  - round: 1
+    prefer: [QB, RB, WR]
+    avoid: [K, DST]
+  - round: 2
+    prefer: [QB, RB, WR]
+    avoid: [K, DST]
+  - round: 3
+    prefer: [QB, WR, RB]
+    avoid: [K, DST]
+  - round: 4
+    prefer: [WR, RB, TE]
+    avoid: [K, DST]
+  - round: 5
+    prefer: [WR, RB, TE]
+    avoid: [K, DST]
+
+# How many ADP slots early the bot will take a player it wants. Wider than the
+# balanced default: 10 leaves an 11-player window, which in a format where the
+# ADP board itself is less settled is tighter than it looks.
+reach_tolerance: 16
+
+# Applied only when sync reports the league actually has these rules.
+superflex_qb_weight: 1.35
+te_premium_weight: 1.15

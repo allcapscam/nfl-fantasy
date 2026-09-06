@@ -28,8 +28,12 @@ LEAGUE = LeagueSettings(
 
 
 def val(name, position, vor):
+    # The flex bar is stated even where a test does not care about it: asking
+    # for a seat a valuation has no replacement level for now raises, rather
+    # than quietly handing back the player's whole projection as his value.
     player = Player(id=name, name=name, position=position, projected_points=vor)
-    return Valuation(player=player, points=vor, games=16, adjusted=vor, replacement=0.0)
+    return Valuation(player=player, points=vor, games=16, adjusted=vor,
+                     replacement=0.0, flex_replacement={"FLEX": 0.0})
 
 
 # -- snake maths -------------------------------------------------------------
@@ -248,6 +252,7 @@ def test_a_bench_candidate_is_compared_against_a_bench_baseline():
     def v(name, points, replacement):
         pl = P(id=name, name=name, position="QB", projected_points=points)
         return Valuation(player=pl, points=points, games=11,
+                         flex_replacement={"FLEX": 0.0},
                          adjusted=points + 60, replacement=replacement)
 
     pool = [v(f"QB{i}", 300 - i * 10, 290) for i in range(5)]
@@ -268,7 +273,8 @@ def test_multipliers_scale_the_player_not_the_gap():
     from nfl_fantasy.platforms.base import Player as P
 
     pl = P(id="r", name="Rookie", position="WR", projected_points=200)
-    val_ = Valuation(player=pl, points=200, games=16, adjusted=200, replacement=180)
+    val_ = Valuation(player=pl, points=200, games=16, adjusted=200,
+                     replacement=180, flex_replacement={"FLEX": 0.0})
     c = candidates([val_], {"WR": 0.0}, LEAGUE)[0]
     c.upside = 1.25
 
@@ -282,7 +288,8 @@ def test_the_best_player_still_matches_the_two_pick_proof():
 
     def v(name, points):
         pl = P(id=name, name=name, position="RB", projected_points=points)
-        return Valuation(player=pl, points=points, games=16, adjusted=points, replacement=0)
+        return Valuation(player=pl, points=points, games=16, adjusted=points,
+                         replacement=0, flex_replacement={"FLEX": 0.0})
 
     pool = [v(f"RB{i}", 100 - i * 10) for i in range(6)]
     run = 2.0
@@ -307,7 +314,7 @@ def test_a_flex_seat_is_valued_on_the_pooled_replacement():
     def v(name, position, points, replacement):
         player = P(id=name, name=name, position=position, projected_points=points)
         return Valuation(player=player, points=points, games=16, adjusted=points,
-                         replacement=replacement, flex_replacement=150.0)
+                         replacement=replacement, flex_replacement={"FLEX": 150.0})
 
     tight_end = v("LaPorta", "TE", 158.5, 129.5)
     receiver = v("Washington", "WR", 176.4, 150.9)
@@ -315,19 +322,19 @@ def test_a_flex_seat_is_valued_on_the_pooled_replacement():
     # On positional VOR the tight end looks better. He is not: for one shared
     # seat the only thing that counts is points above what else could fill it.
     assert tight_end.vor > receiver.vor
-    assert receiver.flex_vor > tight_end.flex_vor
+    assert receiver.flex_vor("FLEX") > tight_end.flex_vor("FLEX")
 
     # Every dedicated slot is full, so the only seat open is the flex.
     ranked = candidates([tight_end, receiver], {"TE": 1.0, "WR": 1.0}, LEAGUE,
                         roster_counts={"QB": 1, "RB": 2, "WR": 2, "TE": 1},
                         open_slots=["FLEX"])
-    assert all(c.role == "flex" for c in ranked)
+    assert all(c.role == "FLEX" for c in ranked)
 
     # Both are now measured against the same baseline, so their values are
     # directly comparable -- which is what positional VOR destroyed.
     by_name = {c.valuation.player.name: c for c in ranked}
-    assert by_name["Washington"].value == receiver.flex_vor
-    assert by_name["LaPorta"].value == tight_end.flex_vor
+    assert by_name["Washington"].value == receiver.flex_vor("FLEX")
+    assert by_name["LaPorta"].value == tight_end.flex_vor("FLEX")
     assert by_name["Washington"].value > by_name["LaPorta"].value
 
     # Ranking by the steeper drop stays correct for choosing a position; what
@@ -341,14 +348,14 @@ def test_slot_role_tells_the_three_seats_apart():
     empty: dict[str, int] = {}
     assert slot_role("RB", empty, LEAGUE) == "dedicated"
     # Two dedicated RB slots filled, so the third back takes the flex.
-    assert slot_role("RB", {"RB": 2}, LEAGUE) == "flex"
+    assert slot_role("RB", {"RB": 2}, LEAGUE) == "FLEX"
     # Flex now occupied by that third back, so a fourth is bench.
     assert slot_role("RB", {"RB": 3}, LEAGUE) == "bench"
     # One starting QB and no flex that accepts him.
     assert slot_role("QB", {"QB": 1}, LEAGUE) == "bench"
     # Real open slots win over counting.
     assert slot_role("WR", {"WR": 9}, LEAGUE, open_slots=["WR"]) == "dedicated"
-    assert slot_role("WR", {}, LEAGUE, open_slots=["FLEX"]) == "flex"
+    assert slot_role("WR", {}, LEAGUE, open_slots=["FLEX"]) == "FLEX"
     assert slot_role("K", {}, LEAGUE, open_slots=["FLEX"]) == "bench"
 
 
@@ -369,7 +376,7 @@ def test_players_competing_for_one_flex_seat_share_a_baseline():
     def v(name, position, points, replacement):
         player = P(id=name, name=name, position=position, projected_points=points)
         return Valuation(player=player, points=points, games=16, adjusted=points,
-                         replacement=replacement, flex_replacement=143.4)
+                         replacement=replacement, flex_replacement={"FLEX": 143.4})
 
     board = [
         v("Washington", "WR", 176.4, 150.9),
@@ -383,8 +390,110 @@ def test_players_competing_for_one_flex_seat_share_a_baseline():
 
     assert ranked[0].valuation.player.name == "Washington"
     # Every flex candidate is measured against the same pooled alternative.
-    flex = [c for c in ranked if c.role == "flex"]
+    flex = [c for c in ranked if c.role == "FLEX"]
     assert len({round(c.expected_next, 6) for c in flex}) == 1
     # And the tight end's steep positional drop no longer buys him anything.
     laporta = next(c for c in flex if c.valuation.player.name == "LaPorta")
     assert ranked[0].cost_of_waiting > laporta.cost_of_waiting
+
+
+# -- superflex ---------------------------------------------------------------
+
+SUPERFLEX = LeagueSettings(
+    key="sf", platform="yahoo", league_id="2", teams=12,
+    roster_slots=["QB", "WR", "WR", "WR", "RB", "RB", "TE", "FLEX", "SUPER_FLEX",
+                  "K", "DST"] + ["BN"] * 5,
+)
+
+
+def test_a_quarterback_takes_the_superflex_seat_and_a_back_does_not():
+    """Each player goes in the choosiest seat that will have him.
+
+    A back put in the Q/W/R/T seat burns the only seat a second quarterback can
+    use, so he belongs in W/R/T while it is open. The distinction is not
+    cosmetic: the two seats are measured against different pools, and naming
+    the wrong one compares a player to a replacement he never competes with.
+    """
+    from nfl_fantasy.vona import slot_role
+
+    both_open = ["FLEX", "SUPER_FLEX"]
+    assert slot_role("QB", {}, SUPERFLEX, open_slots=both_open) == "SUPER_FLEX"
+    assert slot_role("RB", {}, SUPERFLEX, open_slots=both_open) == "FLEX"
+    assert slot_role("WR", {}, SUPERFLEX, open_slots=both_open) == "FLEX"
+    # With only the superflex left, a back does take it.
+    assert slot_role("RB", {}, SUPERFLEX, open_slots=["SUPER_FLEX"]) == "SUPER_FLEX"
+    # A kicker fits neither.
+    assert slot_role("K", {}, SUPERFLEX, open_slots=both_open) == "bench"
+
+    # Inferred from counts, with no roster to inspect: one QB rostered still
+    # leaves the superflex seat, so the second quarterback is a starter.
+    assert slot_role("QB", {"QB": 1}, SUPERFLEX) == "SUPER_FLEX"
+    assert slot_role("QB", {"QB": 2}, SUPERFLEX) == "bench"
+
+
+def test_a_superflex_seat_shows_up_as_quarterback_demand():
+    """Opponents in a superflex room chase quarterbacks; the model must see it.
+
+    Spreading every flex seat over backs and receivers left quarterback demand
+    at the one dedicated slot, so the run model predicted no quarterback run in
+    the one format where it is the defining feature of the draft.
+    """
+    # A team with its dedicated slots full still wants a second quarterback.
+    full = Counter({"QB": 1, "RB": 2, "WR": 3, "TE": 1})
+    needs = team_needs(SUPERFLEX, full)
+    assert needs["QB"] > needs["RB"]
+    assert needs["QB"] > needs["WR"]
+
+    # And in a single-QB league the same roster wants none.
+    single_qb = SUPERFLEX.model_copy(
+        update={"roster_slots": [s if s != "SUPER_FLEX" else "BN"
+                                 for s in SUPERFLEX.roster_slots]}
+    )
+    assert team_needs(single_qb, full)["QB"] == 0
+
+    # Once both quarterback seats are filled the appetite is spent, not doubled.
+    stocked = Counter({"QB": 2, "RB": 2, "WR": 3, "TE": 1})
+    assert team_needs(SUPERFLEX, stocked)["QB"] == 0
+
+
+def test_superflex_runs_predict_quarterbacks_going_before_your_next_pick():
+    """End to end: a room that has drafted skill players is about to take QBs."""
+    # Two rounds of pure skill picks, so every team has holes at quarterback.
+    taken = ["RB", "WR"] * 12
+    runs = runs_from_needs(SUPERFLEX, taken, start=24, end=36, my_slot=1, teams=12)
+    single_qb = SUPERFLEX.model_copy(
+        update={"roster_slots": [s if s != "SUPER_FLEX" else "BN"
+                                 for s in SUPERFLEX.roster_slots]}
+    )
+    assert runs["QB"] > runs_from_needs(single_qb, taken, 24, 36, 1, teams=12)["QB"]
+
+
+def test_a_quarterback_is_not_valued_against_the_receiver_pool():
+    """The scale mismatch that the seat naming exists to prevent.
+
+    A quarterback measured against the W/R/T bar scores hundreds of points of
+    nonsense, because that pool is cut where receivers run out rather than
+    where quarterbacks do. He must be measured in the seat he would take.
+    """
+    from nfl_fantasy.platforms.base import Player as P
+
+    def v(name, position, points):
+        player = P(id=name, name=name, position=position, projected_points=points)
+        return Valuation(player=player, points=points, games=16, adjusted=points,
+                         replacement=290.0 if position == "QB" else 195.0,
+                         flex_replacement={"FLEX": 195.0, "SUPER_FLEX": 290.0})
+
+    quarterback = v("Allen", "QB", 405.0)
+    back = v("Gibbs", "RB", 300.0)
+
+    have = {"QB": 1, "RB": 2, "WR": 3, "TE": 1}
+    ranked = candidates([quarterback, back], {"QB": 2.0, "RB": 2.0}, SUPERFLEX,
+                        have, open_slots=["FLEX", "SUPER_FLEX"])
+    by_name = {c.valuation.player.name: c for c in ranked}
+
+    assert by_name["Allen"].role == "SUPER_FLEX"
+    assert by_name["Gibbs"].role == "FLEX"
+    # Valued in his own seat, not against a receiver replacement 95 points down.
+    assert by_name["Allen"].value == quarterback.flex_vor("SUPER_FLEX")
+    assert by_name["Allen"].value != quarterback.flex_vor("FLEX")
+    assert by_name["Gibbs"].value == back.flex_vor("FLEX")

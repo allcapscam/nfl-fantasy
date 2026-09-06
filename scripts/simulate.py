@@ -65,9 +65,20 @@ def lineup_points(roster: list[Valuation], settings: LeagueSettings) -> float:
 
 
 def needs(roster: list[Valuation], settings: LeagueSettings) -> set[str]:
+    """Positions this simulated manager still wants: his required slots, plus
+    one extra wherever a flex seat is in play for the position.
+
+    Quarterback counts as one of those in a superflex league. Left out, the
+    modelled room never wanted a second quarterback, so a simulation asked when
+    to take yours answered as though nobody else were competing for one -- the
+    opposite of how a superflex draft actually goes.
+    """
     have = Counter(v.player.position for v in roster)
+    extra = {"RB": 1, "WR": 1}
+    if settings.is_superflex:
+        extra["QB"] = 1
     return {p for p in POSITIONS
-            if have[p] < settings.starters_at(p) + (1 if p in ("RB", "WR") else 0)}
+            if have[p] < settings.starters_at(p) + extra.get(p, 0)}
 
 
 def opponent_pick(pool, roster, settings, rng, need_bias=0.65, noise=4):

@@ -76,7 +76,10 @@ leagues:
 Strategy rules come in two kinds:
 
 - **Hard constraints** (`earliest_round`, `max_per_position`) — never violated.
-  This is how you say "no kicker before round 14."
+  This is how you say "no kicker before round 14." Because they are never
+  violated, they survive being aimed at a league they do not suit, so
+  `show` and `queue` report the mismatches: a QB gate in a superflex league, a
+  cap below what has to start, a gate past the end of the draft.
 - **Soft preferences** (`round_plan`, `position_weight`) — these rank the players
   that already passed the constraints. This is how you say "I'd like a WR in
   round 1, but take the value if it falls."
@@ -145,7 +148,9 @@ uv run draftbot queue --league home
 roster/flex logic including superflex and TE-premium, the ranking engine,
 FantasyPros rankings and projections via API or CSV export, name matching
 (100% on the draftable range against a live Sleeper league), the Sleeper
-adapter, the Yahoo adapter and OAuth flow, roster-valid queue export, the VONA advisor, 115 tests.
+adapter, the Yahoo adapter and OAuth flow, roster-valid queue export, the VONA
+advisor, superflex and multi-flex roster shapes, strategy/format conflict
+warnings, 133 tests.
 
 ### The VONA advisor
 
@@ -216,6 +221,39 @@ rather than on whose position degrades faster. The `advise` table prints the
 seat and the value actually used, because reading positional VOR next to a cost
 derived from a different scale is precisely the mistake that caused this.
 
+**And a superflex seat is not a flex seat.** A league with a `Q/W/R/T` slot
+starts two quarterbacks per team, so twenty-four of them start in a twelve-team
+league rather than twelve. Every flex slot used to draw from one hardcoded
+RB/WR/TE list, which got this wrong twice over: the superflex seats were handed
+to backs and receivers, pushing *their* replacement twelve places deeper, while
+quarterbacks kept the replacement level of a league that starts one. On a
+realistic board that put no quarterback in the top twelve of a format where the
+QB1 is a first-round pick.
+
+Each seat now draws only from the positions it accepts, and each *kind* of seat
+carries its own pooled replacement. The two are not interchangeable -- the
+Q/W/R/T pool includes quarterbacks and is cut where they run out, so it sits
+roughly a hundred points above the W/R/T pool. A quarterback measured against
+the latter scores hundreds of points of nonsense. That is why a candidate's seat
+is named rather than flagged as a generic "flex", and why the `advise` table
+prints `SUPER_FLEX` or `FLEX` rather than both as one word: the name is what
+forces the matching scale.
+
+Fixing the pooling exposed a third error in the plain-flex case. The bar was
+found by merging RB/WR/TE by points and indexing at `(dedicated + flex) x
+teams`, which assumes a league's starters are the top of that merged list. They
+are not -- a mandatory TE slot forces ten tight ends into lineups while better
+receivers sit, so the index lands further down the receiver list than the real
+cut. The bar is now the best player who actually starts nowhere, which in one
+league was 13.5 points higher than the merged index said.
+
+The room is modelled to match. A superflex seat is mostly a second quarterback
+slot, and unlike a true flex it is a *requirement* rather than a luxury -- rooms
+fill it long before their last receiver. So opponent quarterback demand is gated
+on their quarterbacks, not on the rest of their lineup; gating it as a flex meant
+the demand appeared around round seven, long after the run it was meant to
+predict.
+
 It recommends a **shortlist of three to five players spanning at least two
 positions**, not a single name. That needs a per-player version of the same
 subtraction -- the second-best back is measured against the back who would be
@@ -281,9 +319,6 @@ platform's autodraft consumes top-down. They are not the same ranking:
   rather than on code. In the meantime a league can carry hand-entered `manual`
   settings in `leagues.yaml` and still export a queue -- see
   `leagues.example.yaml`.
-- **Strategy/format conflict warnings.** Nothing yet catches a strategy that
-  gates QB until round 6 being pointed at a superflex league, where that's a bad
-  idea.
 - **Auction and keeper/dynasty formats.** The engine assumes a snake draft.
 
 ### Two FantasyPros traps

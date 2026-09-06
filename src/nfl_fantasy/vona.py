@@ -26,7 +26,7 @@ from collections import Counter
 from dataclasses import dataclass
 
 from nfl_fantasy.settings import FLEX_SLOTS, LeagueSettings, slot_accepts
-from nfl_fantasy.valuation import FLEXIBLE, Valuation
+from nfl_fantasy.valuation import Valuation, flex_slot_kinds
 
 POSITIONS = ("QB", "RB", "WR", "TE", "K", "DST")
 
@@ -61,30 +61,70 @@ def rosters_from_picks(positions: list[str], teams: int) -> dict[int, Counter]:
     return rosters
 
 
+#: How much of a superflex seat is quarterback demand. A Q/W/R/T seat exists to
+#: be filled by a second quarterback and almost always is -- quarterback scoring
+#: dwarfs what a third back would put in the same seat -- but a team that has
+#: punted the position spends it on a skill player instead. Splitting the seat
+#: evenly across everything it accepts would under-call the quarterback run that
+#: defines a superflex draft; treating it as fully dedicated would over-call it.
+SUPER_FLEX_QB_SHARE = 0.7
+
+#: Positions a flex seat's leftover demand is spread across. Tight end is left
+#: out on purpose: the seat is rarely spent on one, and counting it inflates
+#: tight end demand well past what rooms actually do.
+FLEX_DEMAND_SKIPS = {"TE"}
+
+
 def team_needs(settings: LeagueSettings, roster: Counter) -> dict[str, float]:
     """Starting slots this team still has to fill, by position.
 
     Flex demand is spread over the positions that can fill it, so a team with
     its dedicated RB and WR slots full still carries some appetite for both.
+
+    Each kind of seat is counted separately, because they are not the same
+    appetite. Lumping a Q/W/R/T seat in with a W/R/T one and spreading both over
+    backs and receivers leaves quarterback demand at whatever the single
+    dedicated slot requires -- so the model predicts no quarterback run in
+    exactly the format where the quarterback run is the draft.
     """
     needs: dict[str, float] = {}
     for position in POSITIONS:
         required = settings.starters_at(position)
         needs[position] = max(0.0, required - roster.get(position, 0))
 
-    flex_slots = sum(1 for slot in settings.starting_slots if slot in FLEX_SLOTS)
-    if flex_slots:
+    seats = Counter(slot for slot in settings.starting_slots if slot in FLEX_SLOTS)
+    for slot, count in seats.items():
+        accepts = [p for p in POSITIONS if p in FLEX_SLOTS[slot]]
+        spread = [p for p in accepts if p not in FLEX_DEMAND_SKIPS]
+        qb_share = SUPER_FLEX_QB_SHARE if "QB" in spread else 0.0
+
+        if qb_share:
+            # The quarterback share is *not* gated on the rest of the lineup.
+            # A superflex seat is mostly a second quarterback slot, and a
+            # quarterback slot is a requirement rather than a luxury: rooms
+            # fill it well before their last receiver. Gating it behind every
+            # dedicated slot, as a true flex is gated, meant the demand only
+            # appeared around round seven -- long after the quarterback run it
+            # was supposed to predict had already happened.
+            room = settings.starters_at("QB") + count - roster.get("QB", 0)
+            needs["QB"] += qb_share * min(float(count), max(0.0, room))
+
+        rest = [p for p in spread if p != "QB"]
+        if not rest:
+            continue
+        # What is left of the seat is ordinary flex appetite, and stays gated:
+        # nobody chases a flex back before his required backs are in.
         dedicated_filled = all(
-            roster.get(p, 0) >= settings.starters_at(p) for p in ("RB", "WR", "TE")
+            roster.get(p, 0) >= settings.starters_at(p) for p in accepts
         )
-        flex_used = max(
-            0,
-            sum(roster.get(p, 0) - settings.starters_at(p) for p in ("RB", "WR", "TE")),
+        used = max(
+            0, sum(roster.get(p, 0) - settings.starters_at(p) for p in accepts)
         )
-        remaining_flex = max(0.0, flex_slots - flex_used)
-        if remaining_flex and dedicated_filled:
-            for position in ("RB", "WR"):
-                needs[position] += remaining_flex / 2
+        remaining = max(0.0, count - used)
+        if not remaining or not dedicated_filled:
+            continue
+        for position in rest:
+            needs[position] += remaining * (1 - qb_share) / len(rest)
     return needs
 
 
@@ -279,32 +319,46 @@ def slot_role(
     settings: LeagueSettings,
     open_slots: list[str] | None = None,
 ) -> str:
-    """Which seat this player would take: "dedicated", "flex", or "bench".
+    """Which seat this player would take: "dedicated", "bench", or a flex slot.
 
-    The three are valued on different scales, so they have to be told apart. A
-    dedicated slot is measured against the position's own replacement; a flex
-    seat against the pooled flex replacement, since RB, WR and TE compete for
-    it; a bench spot against raw points with no games backfill.
+    The scales differ, so the seats have to be told apart. A dedicated slot is
+    measured against the position's own replacement; a bench spot against raw
+    points with no games backfill; a flex seat against the pooled replacement
+    for *that* seat.
+
+    A flex seat is returned by name rather than as a generic "flex" because a
+    league can have more than one kind, and their baselines are not remotely
+    alike -- a Q/W/R/T pool includes quarterbacks and cuts a round deeper than
+    a W/R/T one. Returning the name is what forces the caller to use the
+    matching scale.
+
+    Where more than one open seat would take the player, he goes in the
+    choosiest of them: an RB fills W/R/T rather than burning the Q/W/R/T seat
+    that only he and a quarterback can use.
     """
+    def narrowest(slots: list[str]) -> str | None:
+        fits = [s for s in slots if s in FLEX_SLOTS and slot_accepts(s, position)]
+        return min(fits, key=lambda s: len(FLEX_SLOTS[s]), default=None)
+
     if open_slots is not None:
         if any(slot == position for slot in open_slots):
             return "dedicated"
-        if any(slot in FLEX_SLOTS and slot_accepts(slot, position)
-               for slot in open_slots):
-            return "flex"
-        return "bench"
+        return narrowest(open_slots) or "bench"
 
     # No roster to inspect: infer from counts. Dedicated slots fill first, then
-    # any overflow at a flex-eligible position occupies the flex.
+    # any overflow at an eligible position occupies a flex seat.
     if roster_counts.get(position, 0) < settings.starters_at(position):
         return "dedicated"
-    flex_slots = sum(1 for slot in settings.starting_slots if slot in FLEX_SLOTS)
-    overflow = sum(
-        max(0, roster_counts.get(other, 0) - settings.starters_at(other))
-        for other in FLEXIBLE
-    )
-    if position in FLEXIBLE and overflow < flex_slots:
-        return "flex"
+    for slot in flex_slot_kinds(settings):
+        if not slot_accepts(slot, position):
+            continue
+        seats = sum(1 for s in settings.starting_slots if s == slot)
+        overflow = sum(
+            max(0, roster_counts.get(other, 0) - settings.starters_at(other))
+            for other in FLEX_SLOTS[slot]
+        )
+        if overflow < seats:
+            return slot
     return "bench"
 
 
@@ -401,11 +455,11 @@ class Candidate:
         """Value in the role this player would actually fill.
 
         Three scales, because three different things are being replaced: the
-        position's own replacement for a dedicated slot, the pooled flex
-        replacement for a flex seat, and raw points for a bench spot.
+        position's own replacement for a dedicated slot, the pooled replacement
+        for whichever flex seat he would take, and raw points for a bench spot.
         """
-        if self.role == "flex":
-            return self.valuation.flex_vor
+        if self.role in FLEX_SLOTS:
+            return self.valuation.flex_vor(self.role)
         return self.valuation.vor if self.starts else self.valuation.bench_vor
 
     @property
@@ -459,20 +513,27 @@ def candidates(
     for valuation in available:
         by_position.setdefault(valuation.player.position, []).append(valuation)
 
-    # Candidates competing for the flex share one seat, so they share one
-    # counterfactual. The two-pick derivation behind cost-of-waiting assumes the
-    # slot is still open at your next pick -- true when a back and a receiver
-    # are filling *different* dedicated slots, false when both are filling the
-    # same flex. Taking either one fills it, so the honest question is not whose
-    # position degrades faster but who is worth more in the seat. Pooling the
-    # baseline across every flex-eligible position is what makes it that.
-    flex_pool = sorted(
-        (v for p in FLEXIBLE for v in by_position.get(p, [])),
-        key=lambda v: v.flex_vor,
-        reverse=True,
-    )
-    flex_run = sum(runs.get(p, 0.0) for p in FLEXIBLE)
-    flex_baseline = interpolate([v.flex_vor for v in flex_pool], flex_run)
+    # Candidates competing for the same flex seat share one counterfactual. The
+    # two-pick derivation behind cost-of-waiting assumes the slot is still open
+    # at your next pick -- true when a back and a receiver are filling
+    # *different* dedicated slots, false when both are filling the same flex.
+    # Taking either one fills it, so the honest question is not whose position
+    # degrades faster but who is worth more in the seat. Pooling the baseline
+    # across every position the seat accepts is what makes it that.
+    #
+    # One baseline per *kind* of seat. A W/R/T and a Q/W/R/T seat pool different
+    # players and cut at different depths, so a single shared number would put
+    # quarterbacks and receivers on one scale that fits neither.
+    flex_baselines: dict[str, float] = {}
+    for slot in flex_slot_kinds(settings):
+        accepts = [p for p in POSITIONS if p in FLEX_SLOTS[slot]]
+        pool = sorted(
+            (v for p in accepts for v in by_position.get(p, [])),
+            key=lambda v: v.flex_vor(slot),
+            reverse=True,
+        )
+        run = sum(runs.get(p, 0.0) for p in accepts)
+        flex_baselines[slot] = interpolate([v.flex_vor(slot) for v in pool], run)
 
     results: list[Candidate] = []
     for position, pool in by_position.items():
@@ -485,15 +546,14 @@ def candidates(
         # Mixing scales was a real bug: bench candidates measured against
         # starter baselines all showed one constant gap, carrying no ranking
         # information at all.
-        if role == "flex":
-            # Sorted on the flex scale too, so `depth` means what it says.
-            pool.sort(key=lambda v: v.flex_vor, reverse=True)
-            scale = None            # the shared flex baseline is used instead
+        if role in FLEX_SLOTS:
+            # Sorted on that seat's scale too, so `depth` means what it says.
+            pool.sort(key=lambda v, slot=role: v.flex_vor(slot), reverse=True)
+            baseline = flex_baselines[role]
         elif role == "dedicated":
-            scale = [v.vor for v in pool]
+            baseline = interpolate([v.vor for v in pool], run)
         else:
-            scale = [v.bench_vor for v in pool]
-        baseline = flex_baseline if scale is None else interpolate(scale, run)
+            baseline = interpolate([v.bench_vor for v in pool], run)
         for depth, valuation in enumerate(pool[:per_position]):
             results.append(
                 Candidate(

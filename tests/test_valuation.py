@@ -7,6 +7,7 @@ from nfl_fantasy.valuation import (
     adjusted_points,
     allocate_flex,
     dedicated_starters,
+    flex_replacement_levels,
     points_per_game,
     replacement_levels,
     value_board,
@@ -121,3 +122,125 @@ def test_replacement_level_player_is_worth_about_nothing():
     rbs = sorted((v for v in board if v.player.position == "RB"),
                  key=lambda v: v.vor, reverse=True)
     assert abs(rbs[depth["RB"]].vor) < 1e-6
+
+
+# -- superflex ---------------------------------------------------------------
+#
+# Cam's final Yahoo league is 12-team half-PPR with both a W/R/T and a Q/W/R/T
+# seat. Every test below covers a way the model got that league wrong when it
+# assumed one kind of flex slot, hardcoded to RB/WR/TE.
+
+SUPERFLEX = LeagueSettings(
+    key="sf", platform="yahoo", league_id="2", teams=12,
+    roster_slots=["QB", "WR", "WR", "WR", "RB", "RB", "TE", "FLEX", "SUPER_FLEX",
+                  "K", "DST"] + ["BN"] * 5,
+)
+
+
+def sorted_by_position(board):
+    by_position = {}
+    for player in board:
+        by_position.setdefault(player.position, []).append(player)
+    for players in by_position.values():
+        players.sort(key=lambda p: p.projected_points, reverse=True)
+    return by_position
+
+
+def test_a_superflex_seat_is_allocated_to_quarterbacks():
+    """The seat goes to whoever scores most in it, and that is a quarterback.
+
+    Every flex slot used to draw from one hardcoded RB/WR/TE list, so the twelve
+    Q/W/R/T seats were handed to backs and receivers -- pushing their
+    replacement twelve places deeper while quarterbacks kept the replacement
+    level of a league that starts one.
+    """
+    allocation = allocate_flex(SUPERFLEX, sorted_by_position(BOARD),
+                               dedicated_starters(SUPERFLEX))
+    # Twelve dedicated QB slots plus the twelve superflex seats.
+    assert allocation["QB"] == 24
+    # The W/R/T seats are still the skill positions', and only those.
+    added = sum(allocation[p] - dedicated_starters(SUPERFLEX)[p]
+                for p in ("RB", "WR", "TE"))
+    assert added == 12
+
+
+def test_superflex_replacement_is_the_second_quarterback_not_the_first():
+    levels, depth = replacement_levels(SUPERFLEX, BOARD)
+    assert depth["QB"] == 24
+    single_qb = SUPERFLEX.model_copy(
+        update={"roster_slots": [s if s != "SUPER_FLEX" else "BN"
+                                 for s in SUPERFLEX.roster_slots]}
+    )
+    assert replacement_levels(single_qb, BOARD)[1]["QB"] == 12
+    # A deeper replacement is a lower bar, so every quarterback is worth more.
+    assert levels["QB"] < replacement_levels(single_qb, BOARD)[0]["QB"]
+
+
+def test_quarterbacks_reach_the_top_of_a_superflex_board():
+    """The symptom that made this findable: no QB anywhere near the top.
+
+    With twenty-four starting, the QB1's lead over the quarterback you would
+    otherwise settle for is worth as much as any back's -- which is the whole
+    reason the format exists.
+    """
+    top = [v.player.position for v in value_board(SUPERFLEX, BOARD)[:5]]
+    assert "QB" in top
+
+    single_qb = SUPERFLEX.model_copy(
+        update={"roster_slots": [s if s != "SUPER_FLEX" else "BN"
+                                 for s in SUPERFLEX.roster_slots]}
+    )
+    # Same board, same strategy, one slot different: the QB1 must rank higher
+    # in the superflex league than in the single-QB one.
+    def qb1_rank(settings):
+        board = value_board(settings, BOARD)
+        return next(i for i, v in enumerate(board) if v.player.position == "QB")
+
+    assert qb1_rank(SUPERFLEX) < qb1_rank(single_qb)
+
+
+def test_each_kind_of_flex_seat_gets_its_own_pooled_replacement():
+    """Two seats, two baselines. Sharing one puts QBs on a receiver's scale.
+
+    The Q/W/R/T pool includes quarterbacks and is cut where *they* run out, so
+    it sits far above the W/R/T pool. Measuring a quarterback against the
+    latter credits him with the gap between two unrelated scales -- hundreds of
+    phantom points.
+    """
+    levels = flex_replacement_levels(SUPERFLEX, BOARD)
+    assert set(levels) == {"FLEX", "SUPER_FLEX"}
+    assert levels["SUPER_FLEX"] > levels["FLEX"]
+
+    board = {v.player.name: v for v in value_board(SUPERFLEX, BOARD)}
+    qb1 = board["QB0"]
+    # Valued in the seat he would actually take, the QB1 is worth his lead over
+    # the next startable quarterback -- not over a replacement receiver.
+    assert qb1.flex_vor("SUPER_FLEX") < qb1.flex_vor("FLEX")
+    assert qb1.flex_vor("SUPER_FLEX") == qb1.adjusted - levels["SUPER_FLEX"]
+
+
+def test_the_flex_bar_is_the_best_player_left_not_a_merged_rank():
+    """A league starts ten tight ends whether or not ten are worth starting.
+
+    The old cut merged RB/WR/TE by points and indexed at (dedicated + flex) x
+    teams, which assumes the league's starters *are* the top of that merged
+    list. They are not: a mandatory TE slot forces ten tight ends into lineups
+    while better receivers sit, so the index lands further down the receiver
+    list than the real cut. Here that put the flex bar at 202.5 when the best
+    player nobody has to start is worth 216.0 -- a bar 13.5 points too low,
+    which inflated every flex candidate against dedicated and bench ones.
+    """
+    levels = flex_replacement_levels(LEAGUE, BOARD)
+    assert set(levels) == {"FLEX"}
+
+    depth = allocate_flex(LEAGUE, sorted_by_position(BOARD),
+                          dedicated_starters(LEAGUE))
+    starting = {p.name for position in ("RB", "WR", "TE")
+                for p in sorted_by_position(BOARD)[position][:depth[position]]}
+    best_left = max(p.projected_points for p in BOARD
+                    if p.position in ("RB", "WR", "TE") and p.name not in starting)
+    assert levels["FLEX"] == best_left
+
+    merged = sorted((p.projected_points for p in BOARD
+                     if p.position in ("RB", "WR", "TE")), reverse=True)
+    assert levels["FLEX"] > merged[(2 + 2 + 1 + 1) * LEAGUE.teams]

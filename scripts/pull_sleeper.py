@@ -83,10 +83,15 @@ def main() -> int:
     parser.add_argument("--scoring", default="half_ppr",
                         choices=["std", "half_ppr", "ppr"])
     parser.add_argument("--out", type=Path, default=Path("data/projections"))
+    parser.add_argument(
+        "--adp", choices=["std", "half_ppr", "ppr", "2qb", "dynasty"], default=None,
+        help="Which ADP board to read. Defaults to --scoring. Use 2qb for a "
+             "superflex league: single-QB ADP has the QB1 going in round three, "
+             "and the whole market prior is wrong from the first pick.")
     args = parser.parse_args()
 
     points_key = f"pts_{args.scoring}"
-    adp_key = f"adp_{args.scoring}"
+    adp_key = f"adp_{args.adp or args.scoring}"
 
     players = SleeperAdapter(key=args.league, league_id=args.league_id).all_players()
     projections = fetch(f"{BASE}/v1/projections/nfl/regular/{args.season}")
@@ -160,6 +165,7 @@ def main() -> int:
                      r["prior"]])
 
     with_adp = sum(1 for r in rows if r["adp"] != "")
+    print(f"  ADP board: {adp_key}")
     with_bye = sum(1 for r in rows if r["bye"] != "")
     unproven = sum(1 for r in rows if r["prior"] < 60)
     print(f"{len(rows)} players -> {args.out}/{args.league}*.csv")
