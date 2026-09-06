@@ -266,6 +266,8 @@ leagues:
       pass_td: 4.0
       roster: [QB, WR, WR, WR, RB, RB, TE, FLEX, SUPER_FLEX, K, DST,
                BN, BN, BN, BN, BN]
+      # Plus the scoring_table -- copy the whole block from the `money` entry
+      # in leagues.example.yaml, which carries this league's rules verbatim.
 ```
 
 `sync` will report `platform unavailable ... using manual settings` and then
