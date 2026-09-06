@@ -41,18 +41,24 @@ from nfl_fantasy.vona import (
 
 POSITIONS = ("QB", "RB", "WR", "TE", "K", "DST")
 
-#: The round from which simulated opponents will consider a kicker or defence.
+#: The round from which simulated opponents will consider each of these.
 #: Rooms vary enormously here and it changes the advice: a room that waits until
 #: round 14 leaves the best kicker on the board far longer than one that starts
 #: in round 8, so guessing wrong makes the model reach for a position that was
-#: never going anywhere. Set it from what the live board is actually doing.
-KDST_FROM_ROUND = 8
+#: never going anywhere. Set them from what the live board is actually doing.
+#:
+#: Defence and kicker are separate because rooms treat them separately -- a
+#: streaming defence has visible upside and goes rounds earlier than a kicker,
+#: who is close to interchangeable. Holding both at one number misprices
+#: whichever gap it lands in: gate both late and the best defences are still on
+#: the board when the room has already taken them; gate both early and kickers
+#: vanish while they are in fact there for the taking.
+KDST_FROM_ROUND: dict[str, int] = {"DST": 8, "K": 8}
 
 
-def set_kdst_round(round_number: int) -> None:
-    """Set the round from which the modelled room will take a kicker/defence."""
-    global KDST_FROM_ROUND
-    KDST_FROM_ROUND = round_number
+def set_kdst_rounds(rounds: dict[str, int]) -> None:
+    """Set the round from which the modelled room will take each of K and DST."""
+    KDST_FROM_ROUND.update(rounds)
 
 
 def lineup_points(roster: list[Valuation], settings: LeagueSettings) -> float:
@@ -107,9 +113,10 @@ def opponent_pick(pool, roster, settings, rng, need_bias=0.65, noise=4):
     # slice leaves nothing and the fallback takes one regardless. That made the
     # round gate inert -- every setting predicted the first kicker at the same
     # pick -- and the model could not represent a room that waits.
-    early = len(roster) + 1 < KDST_FROM_ROUND
-    if early:
-        candidates = [v for v in pool if v.player.position not in ("K", "DST")]
+    round_number = len(roster) + 1
+    too_early = {p for p, first in KDST_FROM_ROUND.items() if round_number < first}
+    if too_early:
+        candidates = [v for v in pool if v.player.position not in too_early]
         pool = candidates or pool
 
     by_adp = sorted((v for v in pool if v.player.adp), key=lambda v: v.player.adp)
@@ -231,10 +238,10 @@ def run(strategy, board, settings, slot, teams, rounds, seed):
 _CTX: dict = {}
 
 
-def _init_worker(league: str, kdst_round: int = KDST_FROM_ROUND) -> None:
+def _init_worker(league: str, kdst_rounds: dict[str, int] | None = None) -> None:
     # Workers are fresh processes, so a module constant set in the parent does
     # not reach them -- it has to be passed in and applied here.
-    set_kdst_round(kdst_round)
+    set_kdst_rounds(kdst_rounds or {})
     settings = load_settings(league)
     _CTX["settings"] = settings
     _CTX["board"] = value_board(settings, load_players(league))
@@ -326,7 +333,7 @@ def openings(board, settings, slot, teams, rounds, runs, depth,
     tasks = [(seq, slot, teams, rounds, runs) for seq in seqs]
     if jobs > 1:
         with multiprocessing.Pool(jobs, _init_worker,
-                                  (settings.key, KDST_FROM_ROUND)) as pool:
+                                  (settings.key, dict(KDST_FROM_ROUND))) as pool:
             results = pool.map(_score_sequence, tasks, chunksize=4)
     else:
         _CTX["settings"], _CTX["board"] = settings, board
@@ -376,6 +383,18 @@ def openings(board, settings, slot, teams, rounds, runs, depth,
     return 0
 
 
+def kdst_rounds_from(args) -> dict[str, int]:
+    """Resolve the K/DST gates from the flags, most specific winning."""
+    rounds: dict[str, int] = {}
+    if args.kdst_round:
+        rounds["DST"] = rounds["K"] = args.kdst_round
+    if args.dst_round:
+        rounds["DST"] = args.dst_round
+    if args.k_round:
+        rounds["K"] = args.k_round
+    return rounds
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--league", default="sleeper")
@@ -389,13 +408,19 @@ def main() -> int:
                         help="picks already made, e.g. 'RB RB' -- pinned, not re-decided")
     parser.add_argument("--openings", type=int, default=0,
                         help="compare forced opening sequences of this many rounds")
-    parser.add_argument("--kdst-round", type=int, default=KDST_FROM_ROUND,
-                        help="round the modelled room starts taking K/DST. Count "
-                             "them in your own league before trusting the output: "
-                             "a room that waits until 14 leaves the picks in "
-                             "between to the players you actually want.")
+    parser.add_argument("--kdst-round", type=int, default=None,
+                        help="round the modelled room starts taking BOTH K and "
+                             "DST. Shorthand for setting the two below together.")
+    parser.add_argument("--dst-round", type=int, default=None,
+                        help="round the room starts taking defences. Usually "
+                             "earlier than kickers -- a streaming defence has "
+                             "upside a kicker does not.")
+    parser.add_argument("--k-round", type=int, default=None,
+                        help="round the room starts taking kickers. Count them "
+                             "on the live board before trusting the output: the "
+                             "picks in between are the players you actually want.")
     args = parser.parse_args()
-    set_kdst_round(args.kdst_round)
+    set_kdst_rounds(kdst_rounds_from(args))
 
     settings = load_settings(args.league)
     teams = args.teams or settings.teams

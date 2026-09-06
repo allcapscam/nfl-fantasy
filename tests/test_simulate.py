@@ -127,3 +127,50 @@ def test_only_the_best_eligible_players_start():
     roster = [v(f"wr{i}", "WR", 200 - i) for i in range(8)]
     # Three dedicated WR slots plus both flex seats can take receivers.
     assert lineup_points(roster, SUPERFLEX) == sum(200 - i for i in range(5))
+
+
+def test_the_room_takes_defences_and_kickers_on_their_own_schedules():
+    """One gate for both mispriced whichever gap it landed in.
+
+    Rooms treat the two separately -- a streaming defence has visible upside and
+    goes rounds before a kicker, who is close to interchangeable. Holding both
+    at one number means either the best defences are still on the board when the
+    room has already taken them, or kickers vanish while they are in fact there.
+    """
+    import random
+
+    import simulate
+
+    settings = SUPERFLEX
+    kickers = [v(f"k{i}", "K", 140 - i) for i in range(12)]
+    defences = [v(f"dst{i}", "DST", 130 - i) for i in range(12)]
+    receivers = [v(f"wr{i}", "WR", 250 - i) for i in range(60)]
+    # By the middle rounds the top of the ADP board *is* kickers and defences.
+    # That is the condition the gate exists for, so the fixture has to create
+    # it: with skill players ahead of them the room never reaches for either
+    # and the gate is untested no matter what it is set to.
+    for index, item in enumerate(kickers + defences + receivers):
+        item.player.adp = float(index + 1)
+    board = kickers + defences + receivers
+
+    def first_round_taken(position, **gates):
+        simulate.set_kdst_rounds({"DST": 99, "K": 99})
+        simulate.set_kdst_rounds(gates)
+        rng = random.Random(0)
+        roster = []
+        for round_number in range(1, 17):
+            pick = simulate.opponent_pick(list(board), roster, settings, rng)
+            roster.append(pick)
+            if pick.player.position == position:
+                return round_number
+        return None
+
+    try:
+        # Defences open at 10 and kickers at 14: each is held until its own gate.
+        assert first_round_taken("DST", DST=10, K=14) >= 10
+        assert first_round_taken("K", DST=10, K=14) >= 14
+        # And moving one does not drag the other with it.
+        assert first_round_taken("DST", DST=4, K=14) >= 4
+        assert first_round_taken("K", DST=4, K=14) >= 14
+    finally:
+        simulate.set_kdst_rounds({"DST": 8, "K": 8})

@@ -147,12 +147,20 @@ position sequences for your next three (~25s) and prints a per-pick average,
 which is the part that survives the noise — individual sequences sit inside
 each other's error bars far more often than they differ.
 
-`--kdst-round N` sets the round from which simulated opponents will take a
-kicker or defence. **Check this against the room**: the default assumes round
-8, and a room that waits until 14 leaves the best kicker on the board for six
-more rounds while spending those picks on the backup quarterbacks and bench
-skill players you wanted. Count the kickers and defences drafted before
-trusting the output.
+`--dst-round N` and `--k-round N` set the round from which simulated opponents
+will take a defence and a kicker. **Check these against the room**: the default
+assumes round 8 for both, and a room that waits until 14 leaves the best kicker
+on the board for six more rounds while spending those picks on the backup
+quarterbacks and bench skill players you wanted. Count the kickers and defences
+drafted before trusting the output.
+
+They are separate because rooms treat them separately -- a streaming defence has
+visible upside and goes rounds earlier than a kicker, who is close to
+interchangeable. The Yahoo superflex room is **defence from 10, kicker from 14**,
+a four-round spread that one number cannot represent: set to 14 the sweep leaves
+the best defences on the board for four rounds after the room has taken them;
+set to 10 it makes kickers vanish while they are in fact there for the taking.
+`--kdst-round N` still sets both, for a room that really does treat them alike.
 
 A sweep that returns everything inside one standard error is telling you the
 decision does not matter — say so rather than ranking noise. That happened for

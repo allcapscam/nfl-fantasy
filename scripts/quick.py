@@ -123,13 +123,16 @@ def main() -> int:
     parser.add_argument("--core", default="",
                         help="positions the sweep may use (default: what you can still roster)")
     parser.add_argument("--kdst-round", type=int, default=None,
-                        help="round from which opponents will take a K or DST")
+                        help="round from which opponents will take both K and DST")
+    parser.add_argument("--dst-round", type=int, default=None,
+                        help="round from which opponents will take a defence")
+    parser.add_argument("--k-round", type=int, default=None,
+                        help="round from which opponents will take a kicker")
     parser.add_argument("--only", default="",
                         help="restrict candidates to these positions, e.g. 'DST WR'")
     args = parser.parse_args()
 
-    if args.kdst_round:
-        simulate.KDST_FROM_ROUND = args.kdst_round
+    simulate.set_kdst_rounds(simulate.kdst_rounds_from(args))
     settings = load_settings(args.league)
     teams = settings.teams
     rounds = len([s for s in settings.roster_slots if s != "IR"])
