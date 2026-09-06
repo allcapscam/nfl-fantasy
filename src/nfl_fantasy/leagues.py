@@ -34,6 +34,15 @@ class ManualSettings(BaseModel):
     te_premium: float = Field(0.0, description="Bonus points per TE reception.")
     pass_td: float = Field(4.0, description="Points per passing touchdown.")
     name: str = ""
+    scoring_table: dict[str, float] = Field(
+        default_factory=dict,
+        description=(
+            "Full scoring, as Sleeper stat key -> points per unit. When given, "
+            "the pull scores projections with this instead of taking a "
+            "platform's precomputed total, which is that platform's idea of the "
+            "format rather than your league's."
+        ),
+    )
 
     def to_settings(self, key: str, platform: Platform, league_id: str) -> LeagueSettings:
         reception = {"standard": 0.0, "half_ppr": 0.5, "ppr": 1.0}[self.scoring]
@@ -49,6 +58,7 @@ class ManualSettings(BaseModel):
                 te_reception_bonus=self.te_premium,
                 pass_td=self.pass_td,
             ),
+            scoring_table=dict(self.scoring_table),
         )
 
 

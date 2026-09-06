@@ -25,8 +25,15 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from nfl_fantasy.leagues import LeagueRegistry
 from nfl_fantasy.matching import TEAM_ALIASES
 from nfl_fantasy.platforms.sleeper import SleeperAdapter
+from nfl_fantasy.scoring import (
+    compare_tables,
+    reconcile,
+    score_line,
+    unused_keys,
+)
 
 BASE = "https://api.sleeper.app"
 POSITIONS = {"QB", "RB", "WR", "TE", "K", "DEF"}
@@ -84,6 +91,15 @@ def main() -> int:
                         choices=["std", "half_ppr", "ppr"])
     parser.add_argument("--out", type=Path, default=Path("data/projections"))
     parser.add_argument(
+        "--score-with", default=None, metavar="LEAGUE",
+        help="Score projections with this league's own scoring_table from "
+             "leagues.yaml, instead of taking Sleeper's precomputed total. "
+             "Sleeper's total is Sleeper's idea of the format, not your "
+             "league's, and nothing says so when they differ.")
+    parser.add_argument(
+        "--registry", type=Path, default=Path("leagues.yaml"),
+        help="Where --score-with looks for the league.")
+    parser.add_argument(
         "--adp", choices=["std", "half_ppr", "ppr", "2qb", "dynasty"], default=None,
         help="Which ADP board to read. Defaults to --scoring. Use 2qb for a "
              "superflex league: single-QB ADP has the QB1 going in round three, "
@@ -92,6 +108,15 @@ def main() -> int:
 
     points_key = f"pts_{args.scoring}"
     adp_key = f"adp_{args.adp or args.scoring}"
+
+    table: dict[str, float] = {}
+    if args.score_with:
+        ref = LeagueRegistry.load(args.registry).get(args.score_with)
+        table = dict((ref.manual.scoring_table if ref.manual else {}) or {})
+        if not table:
+            print(f"{args.score_with!r} has no scoring_table in {args.registry}. "
+                  "Add one, or drop --score-with to use Sleeper's own total.")
+            return 1
 
     players = SleeperAdapter(key=args.league, league_id=args.league_id).all_players()
     projections = fetch(f"{BASE}/v1/projections/nfl/regular/{args.season}")
@@ -102,6 +127,7 @@ def main() -> int:
 
     byes = team_byes(args.season)
     rows = []
+    lines: list[tuple[str, str, dict]] = []
     for pid, stats in projections.items():
         record = players.get(pid)
         if not record:
@@ -112,8 +138,15 @@ def main() -> int:
         points = stats.get(points_key)
         if points is None:
             continue
+        if table:
+            points = score_line(stats, table)
         games = stats.get("gp")
         adp = stats.get(adp_key)
+        lines.append((
+            record.get("full_name") or "",
+            POSITION_MAP.get(position, position),
+            stats,
+        ))
         rows.append({
             "name": (record.get("full_name")
                      or f"{record.get('first_name','')} {record.get('last_name','')}".strip()),
@@ -130,6 +163,31 @@ def main() -> int:
             "adp": round(float(adp), 1) if adp and float(adp) < 900 else "",
             "prior": round(float((prior.get(pid) or {}).get(points_key) or 0), 1),
         })
+
+    # Scoring from raw stats is only sound if the stat keys are the ones the
+    # feed uses. A misspelled key contributes nothing and silently shrinks every
+    # total that depended on it, so prove the names against arithmetic Sleeper
+    # has already done rather than trusting them.
+    if table:
+        check = reconcile([(n, st) for n, _p, st in lines])
+        print(check.describe())
+        if not check.ok():
+            print("\n  Sleeper's own half-PPR total could NOT be reproduced from "
+                  "these stat keys, so the league table cannot be trusted either.")
+            print("  Nothing written. Re-run without --score-with to use "
+                  "Sleeper's precomputed total, and report the keys above.")
+            return 1
+        inert = unused_keys([(n, st) for n, _p, st in lines], table)
+        if inert:
+            print(f"  {len(inert)} of your league's rules are inert -- Sleeper "
+                  f"projects no such stat, so they never pay out:")
+            print("    " + ", ".join(inert))
+        print()
+        print(f"  your scoring vs Sleeper's {args.scoring}, by position")
+        print(f"  {'pos':>5}{'players':>9}{'mean diff':>12}{'largest':>10}")
+        for position, (count, mean, worst) in compare_tables(lines, table).items():
+            print(f"  {position:>5}{count:>9}{mean:>+12.1f}{worst:>+10.1f}")
+        print()
 
     rows.sort(key=lambda r: -r["points"])
     args.out.mkdir(parents=True, exist_ok=True)

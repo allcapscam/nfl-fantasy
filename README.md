@@ -285,6 +285,29 @@ Kickers and defenses are not gated. Their spread above replacement is so small
 that the maths pushes them to the last rounds on its own; a warning fires if a
 required slot can no longer be filled in the picks remaining.
 
+### Scoring the projections yourself
+
+A platform's precomputed total -- Sleeper's `pts_half_ppr` and friends -- is
+that platform's idea of the format, not your league's. Usually they agree.
+When they don't, nothing says so: the number is a plausible season total either
+way, and every figure downstream inherits the error silently.
+
+So a league can carry its full scoring in `leagues.yaml` as a `scoring_table`,
+mapping Sleeper's stat keys to points per unit, and
+`pull_sleeper.py --score-with <league>` scores the raw projected stat line with
+it instead.
+
+That trades one risk for a better one. "Is this the same format?" cannot be
+checked; "are these the right stat keys?" can, against arithmetic the platform
+has already done. Before writing anything the pull scores every player with
+Sleeper's own rules and requires Sleeper's own total to come back. A misspelled
+key contributes nothing and quietly shrinks every total that depended on it --
+renaming one high-volume stat drops agreement from 100% to 88%, and the pull
+refuses and names the key rather than handing back a board that looks fine. It
+also reports which of your rules are inert because the feed projects no such
+stat, and how far your scoring lands from the platform's, per position, so a
+difference that does not matter can be seen not to matter.
+
 ### How the queue differs from the board
 
 `board` answers "who do I take at this pick"; `queue` produces a static list the

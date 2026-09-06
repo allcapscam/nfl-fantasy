@@ -37,13 +37,62 @@ leagues:
 # A queue only needs the roster shape and the scoring format, so a league with
 # manual settings can still export one.
 #
-#  money:
-#    platform: yahoo
-#    league_id: "REPLACE_ME"
-#    strategy: strategies/balanced.yaml
-#    manual:
-#      teams: 12
-#      scoring: half_ppr        # standard | half_ppr | ppr
-#      te_premium: 0.0          # bonus points per TE reception
-#      roster: [QB, RB, RB, WR, WR, WR, TE, FLEX, K, DST,
-#               BN, BN, BN, BN, BN, BN]
+  money:
+    platform: yahoo
+    league_id: "REPLACE_ME"
+    strategy: strategies/balanced.yaml
+    manual:
+      teams: 12
+      scoring: half_ppr        # standard | half_ppr | ppr
+      te_premium: 0.0          # bonus points per TE reception
+      roster: [QB, RB, RB, WR, WR, WR, TE, FLEX, K, DST,
+               BN, BN, BN, BN, BN, BN]
+
+      # Optional, and worth the typing. Without it the pull takes a platform's
+      # precomputed total -- which is that platform's idea of "half PPR", not
+      # your league's, and nothing tells you when the two differ. With it,
+      # `pull_sleeper.py --score-with money` scores the raw projected stat line
+      # under these rules instead, and proves the stat keys are right by
+      # reproducing Sleeper's own total before it writes anything.
+      #
+      # Keys are Sleeper's stat names. The values below are a worked example
+      # from a real Yahoo league; copy your own off the league settings page.
+      scoring_table:
+        pass_yd: 0.04          # 25 yards per point
+        pass_td: 4
+        pass_int: -1
+        pass_2pt: 2
+        rush_yd: 0.1           # 10 yards per point
+        rush_td: 6
+        rush_2pt: 2
+        rec: 0.5
+        rec_yd: 0.1
+        rec_td: 6
+        rec_2pt: 2
+        fum_lost: -2
+        fum_rec_td: 6          # offensive fumble return TD
+        st_td: 6               # return TD
+        fgm_0_19: 3
+        fgm_20_29: 3
+        fgm_30_39: 3
+        fgm_40_49: 4
+        fgm_50p: 5
+        fgmiss_0_19: -3        # Yahoo splits misses by distance; Sleeper does not
+        fgmiss_20_29: -3
+        fgmiss_30_39: -1
+        xpm: 1
+        xpmiss: -1
+        sack: 1
+        int: 2
+        fum_rec: 2
+        def_td: 6
+        safe: 2
+        blk_kick: 2
+        def_st_td: 6           # kickoff and punt return TDs
+        pts_allow_0: 10
+        pts_allow_1_6: 7
+        pts_allow_7_13: 4
+        pts_allow_14_20: 1
+        pts_allow_21_27: 0
+        pts_allow_28_34: -1
+        pts_allow_35p: -4

@@ -69,6 +69,10 @@ class LeagueSettings(BaseModel):
     draft_type: Literal["snake", "linear", "auction"] = "snake"
     roster_slots: list[str] = Field(default_factory=list)
     scoring: Scoring = Field(default_factory=Scoring)
+    #: Full scoring as stat key -> points per unit, when the league supplies it.
+    #: `scoring` above is the handful of rules that steer the engine; this is
+    #: what actually turns a projected stat line into points.
+    scoring_table: dict[str, float] = Field(default_factory=dict)
 
     @property
     def starting_slots(self) -> list[str]:

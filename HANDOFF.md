@@ -281,9 +281,19 @@ What matters about this league, in order:
 - **Sixteen rounds**: eleven starters (`QB WR WR WR RB RB TE FLEX SUPER_FLEX K
   DST`) plus five bench. The two IR slots are not drafted.
 - **Half-PPR, 4-point passing TDs**, −1 per interception, −2 per fumble lost,
-  6-point rushing/receiving TDs, 25 yards per passing point. That is Sleeper's
-  own default scoring, so `pts_half_ppr` from the pull is a fair match for this
-  league rather than an approximation.
+  6-point rushing/receiving TDs, 25 yards per passing point. Checked rule by
+  rule against Sleeper's own half-PPR defaults: **identical for QB, RB, WR, TE
+  and DST**, and different only on missed field goals, which Yahoo splits by
+  distance (−3 inside 30, −1 from 30–39) where Sleeper charges a flat −1. On a
+  fabricated feed that is worth about **7 points a season to a kicker** and
+  nothing at all to anyone else. So Sleeper's board is not an approximation
+  here — for every position that decides a draft it is the same scoring.
+- The league's full scoring is nonetheless typed into `leagues.yaml` as a
+  `scoring_table`, and `pull_sleeper.py --score-with yahoo2` scores the raw
+  projected stat lines with it rather than taking Sleeper's precomputed total.
+  It refuses to write anything unless that same machinery can first reproduce
+  Sleeper's own `pts_half_ppr` from its stat keys, so a renamed key fails loudly
+  instead of quietly shrinking every total that depended on it.
 - **Three receivers start, two backs.** Receiver demand is a round deeper than
   the leagues already drafted.
 - **Six of twelve make the playoffs.** Half the room, which is a higher rate than
