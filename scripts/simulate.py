@@ -25,7 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from nfl_fantasy.advisor import load_players
-from nfl_fantasy.settings import LeagueSettings, slot_accepts
+from nfl_fantasy.settings import FLEX_SLOTS, LeagueSettings, slot_accepts
 from nfl_fantasy.store import load_settings
 from nfl_fantasy.valuation import Valuation, value_board
 from nfl_fantasy.vona import (
@@ -49,13 +49,29 @@ POSITIONS = ("QB", "RB", "WR", "TE", "K", "DST")
 KDST_FROM_ROUND = 8
 
 
+def set_kdst_round(round_number: int) -> None:
+    """Set the round from which the modelled room will take a kicker/defence."""
+    global KDST_FROM_ROUND
+    KDST_FROM_ROUND = round_number
+
+
 def lineup_points(roster: list[Valuation], settings: LeagueSettings) -> float:
-    """Best legal starting lineup from a roster, in projected points."""
+    """Best legal starting lineup from a roster, in projected points.
+
+    This is the objective the whole sweep maximises, so the seat order matters.
+    Dedicated slots fill first, then flex seats narrowest first -- a back goes in
+    W/R/T rather than burning the Q/W/R/T seat only he and a quarterback can use.
+
+    The flex group was spelled `("FLEX",)`, which made a Q/W/R/T seat count as a
+    dedicated slot and fill ahead of the true flex. Every opening in a superflex
+    league was therefore scored against a lineup built in the wrong order.
+    """
     slots = settings.starting_slots
     remaining = sorted(roster, key=lambda v: -v.points)
     total = 0.0
-    dedicated = [s for s in slots if s not in ("FLEX",)]
-    flex = [s for s in slots if s == "FLEX"]
+    dedicated = [s for s in slots if s not in FLEX_SLOTS]
+    flex = sorted((s for s in slots if s in FLEX_SLOTS),
+                  key=lambda s: len(FLEX_SLOTS[s]))
     for slot in dedicated + flex:
         pick = next((v for v in remaining if slot_accepts(slot, v.player.position)), None)
         if pick:
@@ -215,7 +231,10 @@ def run(strategy, board, settings, slot, teams, rounds, seed):
 _CTX: dict = {}
 
 
-def _init_worker(league: str) -> None:
+def _init_worker(league: str, kdst_round: int = KDST_FROM_ROUND) -> None:
+    # Workers are fresh processes, so a module constant set in the parent does
+    # not reach them -- it has to be passed in and applied here.
+    set_kdst_round(kdst_round)
     settings = load_settings(league)
     _CTX["settings"] = settings
     _CTX["board"] = value_board(settings, load_players(league))
@@ -227,7 +246,10 @@ def _score_sequence(job):
     strategy = opening(list(seq))
     scores = [run(strategy, board, settings, slot, teams, rounds, seed)[0]
               for seed in range(runs)]
-    return seq, statistics.mean(scores), statistics.stdev(scores) / (runs ** 0.5)
+    # The per-seed scores come back, not just their mean. Sequences share seeds,
+    # so the honest comparison between two of them is paired -- and that needs
+    # the runs lined up, which a mean throws away.
+    return seq, scores
 
 
 DEFAULT_CORE = ("RB", "WR", "TE", "QB")
@@ -287,6 +309,13 @@ def openings(board, settings, slot, teams, rounds, runs, depth,
     taken, not in their own randomness. The spread between good sequences is
     small next to run-to-run noise, so the standard error is reported -- without
     it these numbers invite conclusions they cannot support.
+
+    Separability is judged on the *paired* difference, seed by seed, rather than
+    on whether two error bars overlap. Most of the variance in a run is the
+    board it was dealt, which both sequences saw; adding two independent
+    standard errors counts that shared luck twice and calls a real gap noise.
+    The `+/-` column is still each sequence's own error, because that is what it
+    means, but the verdict uses the difference.
     """
     seqs = valid_openings(settings, depth, prefix, core)
     jobs = max(1, min(jobs, len(seqs)))
@@ -296,13 +325,19 @@ def openings(board, settings, slot, teams, rounds, runs, depth,
 
     tasks = [(seq, slot, teams, rounds, runs) for seq in seqs]
     if jobs > 1:
-        with multiprocessing.Pool(jobs, _init_worker, (settings.key,)) as pool:
+        with multiprocessing.Pool(jobs, _init_worker,
+                                  (settings.key, KDST_FROM_ROUND)) as pool:
             results = pool.map(_score_sequence, tasks, chunksize=4)
     else:
         _CTX["settings"], _CTX["board"] = settings, board
         results = [_score_sequence(t) for t in tasks]
 
-    scored = sorted(((m, e, seq) for seq, m, e in results), reverse=True)
+    by_seq = {seq: scores for seq, scores in results}
+    scored = sorted(
+        ((statistics.mean(sc), statistics.stdev(sc) / (len(sc) ** 0.5), seq)
+         for seq, sc in results),
+        reverse=True,
+    )
 
     print()
     print(f"  top {min(show, len(scored))} openings")
@@ -317,11 +352,25 @@ def openings(board, settings, slot, teams, rounds, runs, depth,
             print(f"  {' '.join(seq):<26}{mean:>9.0f}{err:>7.0f}")
 
     top = scored[0]
-    close = [x for x in scored if x[0] >= top[0] - (top[1] + x[1])]
+    best_scores = by_seq[top[2]]
+
+    def beaten(seq) -> bool:
+        """Is the best sequence ahead of this one by more than the paired noise?"""
+        diffs = [a - b for a, b in zip(best_scores, by_seq[seq])]
+        if len(diffs) < 2:
+            return False
+        spread = statistics.stdev(diffs) / (len(diffs) ** 0.5)
+        return spread > 0 and statistics.mean(diffs) > spread
+
+    close = [x for x in scored if not beaten(x[2])]
     verdict = "a real edge" if len(close) == 1 else "not separable at this sample"
     print()
     print(f"  best: {' '.join(top[2])} -- {len(close)} sequence(s) within one "
-          f"standard error, {verdict}.")
+          f"paired standard error, {verdict}.")
+    if len(close) > 1:
+        print(f"  tied with it: "
+              f"{', '.join(' '.join(x[2]) for x in close[1:6])}"
+              f"{' ...' if len(close) > 6 else ''}")
 
     summarise(scored, depth, fixed=len(prefix))
     return 0
@@ -340,7 +389,13 @@ def main() -> int:
                         help="picks already made, e.g. 'RB RB' -- pinned, not re-decided")
     parser.add_argument("--openings", type=int, default=0,
                         help="compare forced opening sequences of this many rounds")
+    parser.add_argument("--kdst-round", type=int, default=KDST_FROM_ROUND,
+                        help="round the modelled room starts taking K/DST. Count "
+                             "them in your own league before trusting the output: "
+                             "a room that waits until 14 leaves the picks in "
+                             "between to the players you actually want.")
     args = parser.parse_args()
+    set_kdst_round(args.kdst_round)
 
     settings = load_settings(args.league)
     teams = args.teams or settings.teams
