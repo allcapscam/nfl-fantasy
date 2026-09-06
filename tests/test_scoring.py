@@ -12,6 +12,7 @@ from nfl_fantasy.scoring import (
     SLEEPER_HALF_PPR,
     compare_tables,
     reconcile,
+    reconcile_by_position,
     score_line,
     unused_keys,
 )
@@ -109,3 +110,63 @@ def test_the_league_scoring_matches_sleeper_except_on_kicker_misses():
     differing = {k for k in set(ours) | set(SLEEPER_HALF_PPR)
                  if ours.get(k) != SLEEPER_HALF_PPR.get(k)}
     assert all(k.startswith("fgmiss") for k in differing), differing
+
+
+def test_a_line_with_no_scorable_stat_is_skipped_not_counted_wrong():
+    """Sleeper files the odd linebacker under K: tackles, and no kicks.
+
+    Scoring him yields zero against a real total, so counted as a mismatch he
+    is evidence the stat keys are wrong -- which he is not. He is evidence the
+    feed put a defender in the kicker list. One such record used to fail a
+    46-player position outright.
+    """
+    kicker = {"xpm": 40, "fgm_40_49": 10, "gp": 17}
+    kicker_total = 40 * 1.0 + 10 * 4.0
+    misfiled = {"idp_tkl": 36, "idp_sack": 1, "gp": 18}
+    lines = [("Real Kicker", {**kicker, "pts_half_ppr": kicker_total}),
+             ("Misfiled LB", {**misfiled, "pts_half_ppr": 3.0})]
+
+    check = reconcile(lines)
+    assert check.checked == 1          # only the one there was anything to check
+    assert check.unscoreable == 1
+    assert check.agreement == 1.0
+    assert check.ok()
+
+
+def test_a_wholesale_naming_error_still_fails_even_though_lines_are_skipped():
+    """Skipping unscorable lines must not become a way to pass by scoring none.
+
+    Rename every key and every line is unscorable -- so `checked` is zero, and
+    a check that verified nothing is not a check that passed.
+    """
+    nonsense = {f"x_{k}": v for k, v in SLEEPER_HALF_PPR.items()}
+    lines = [("QB One", {**QB_LINE, "pts_half_ppr": QB_HALF_PPR}),
+             ("WR One", {**WR_LINE, "pts_half_ppr": WR_HALF_PPR})]
+
+    check = reconcile(lines, table=nonsense)
+    assert check.checked == 0
+    assert check.unscoreable == 2
+    assert not check.ok()
+
+
+def test_positions_are_reconciled_separately_so_one_bad_feed_costs_only_itself():
+    """The failure that blocked a real pull.
+
+    Sleeper's projected line for a defence carries sacks, interceptions,
+    fumble recoveries and blocked kicks -- and no points-allowed bucket, which
+    is most of a defence's score. So nothing reproduces its defensive total,
+    while every skill player reconciles exactly. Over the whole board that is
+    95% agreement and a refusal that leaves no board at all; per position it is
+    the skill positions proven and the defences named as unsupported.
+    """
+    defence = {"sack": 45, "int": 14, "fum_rec": 8, "blk_kick": 1, "gp": 17}
+    from_stats = 45 * 1.0 + 14 * 2.0 + 8 * 2.0 + 1 * 2.0
+    lines = [("QB One", "QB", {**QB_LINE, "pts_half_ppr": QB_HALF_PPR}),
+             ("WR One", "WR", {**WR_LINE, "pts_half_ppr": WR_HALF_PPR}),
+             # Sleeper's own number for a defence is not its stat line's worth.
+             ("SEA", "DST", {**defence, "pts_half_ppr": from_stats - 10})]
+
+    checks = reconcile_by_position(lines)
+    assert checks["QB"].ok() and checks["WR"].ok()
+    assert not checks["DST"].ok()
+    assert checks["DST"].worst_error == 10.0

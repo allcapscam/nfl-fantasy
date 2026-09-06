@@ -30,7 +30,7 @@ from nfl_fantasy.matching import TEAM_ALIASES
 from nfl_fantasy.platforms.sleeper import SleeperAdapter
 from nfl_fantasy.scoring import (
     compare_tables,
-    reconcile,
+    reconcile_by_position,
     score_line,
     unused_keys,
 )
@@ -126,32 +126,80 @@ def main() -> int:
         prior = {}
 
     byes = team_byes(args.season)
-    rows = []
-    lines: list[tuple[str, str, dict]] = []
+    entries: list[tuple[str, dict, dict]] = []
     for pid, stats in projections.items():
         record = players.get(pid)
         if not record:
             continue
-        position = record.get("position")
-        if position not in POSITIONS:
+        if record.get("position") not in POSITIONS:
             continue
+        if stats.get(points_key) is None:
+            continue
+        entries.append((pid, record, stats))
+
+    lines: list[tuple[str, str, dict]] = [
+        (record.get("full_name") or "",
+         POSITION_MAP.get(record["position"], record["position"]),
+         stats)
+        for _pid, record, stats in entries
+    ]
+
+    # Scoring from raw stats is only sound if the stat keys are the ones the
+    # feed uses. A misspelled key contributes nothing and silently shrinks every
+    # total that depended on it, so prove the names against arithmetic Sleeper
+    # has already done rather than trusting them.
+    #
+    # Proved per position, because the feed is uneven and one number over the
+    # whole board cannot tell the two failures apart. Sleeper's defensive
+    # projection carries sacks, interceptions, fumble recoveries and blocked
+    # kicks and nothing else -- no points-allowed bucket, no defensive
+    # touchdown -- so no table reproduces its defensive total, while every skill
+    # player reconciles exactly. Judged together that is one refusal and no
+    # board at all; judged per position it is four positions proven and one the
+    # feed cannot support.
+    scorable: set[str] = set()
+    if table:
+        checks = reconcile_by_position(lines)
+        print("  reproducing Sleeper's own "
+              f"{args.scoring} total from its stat keys, position by position")
+        print(f"  {'pos':>5}{'players':>9}{'agree':>8}{'mean':>8}{'worst':>8}"
+              f"  verdict")
+        for position, check in checks.items():
+            print(f"  {position:>5}{check.checked:>9}{check.agreement:>8.1%}"
+                  f"{check.mean_error:>8.2f}{check.worst_error:>8.2f}"
+                  f"  {'keys proven' if check.ok() else 'NOT REPRODUCIBLE'}")
+        scorable = {p for p, c in checks.items() if c.ok()}
+        if not scorable:
+            print("\n  Sleeper's own total could not be reproduced for any "
+                  "position, so the stat keys are wrong and the league table "
+                  "cannot be trusted either.")
+            print("  Nothing written. Re-run without --score-with to use "
+                  "Sleeper's precomputed total, and report the keys above.")
+            return 1
+        fell_back = sorted(set(checks) - scorable)
+        if fell_back:
+            print(f"\n  {', '.join(fell_back)} keep Sleeper's precomputed "
+                  f"{args.scoring} total: the projected line carries none of "
+                  "the stats those rules pay out, so no table -- Sleeper's own "
+                  "included -- can score it from the feed. Those positions are "
+                  "scored under Sleeper's idea of the format, not your "
+                  "league's.")
+        print()
+
+    rows = []
+    for pid, record, stats in entries:
+        position = record["position"]
+        mapped = POSITION_MAP.get(position, position)
         points = stats.get(points_key)
-        if points is None:
-            continue
-        if table:
+        if table and mapped in scorable:
             points = score_line(stats, table)
         games = stats.get("gp")
         adp = stats.get(adp_key)
-        lines.append((
-            record.get("full_name") or "",
-            POSITION_MAP.get(position, position),
-            stats,
-        ))
         rows.append({
             "name": (record.get("full_name")
                      or f"{record.get('first_name','')} {record.get('last_name','')}".strip()),
             "team": record.get("team") or "",
-            "position": POSITION_MAP.get(position, position),
+            "position": mapped,
             "points": round(float(points), 1),
             "games": (FULL_SEASON
                       if position in ALWAYS_FULL_SEASON or not games
@@ -164,28 +212,21 @@ def main() -> int:
             "prior": round(float((prior.get(pid) or {}).get(points_key) or 0), 1),
         })
 
-    # Scoring from raw stats is only sound if the stat keys are the ones the
-    # feed uses. A misspelled key contributes nothing and silently shrinks every
-    # total that depended on it, so prove the names against arithmetic Sleeper
-    # has already done rather than trusting them.
     if table:
-        check = reconcile([(n, st) for n, _p, st in lines])
-        print(check.describe())
-        if not check.ok():
-            print("\n  Sleeper's own half-PPR total could NOT be reproduced from "
-                  "these stat keys, so the league table cannot be trusted either.")
-            print("  Nothing written. Re-run without --score-with to use "
-                  "Sleeper's precomputed total, and report the keys above.")
-            return 1
-        inert = unused_keys([(n, st) for n, _p, st in lines], table)
+        # Only the positions actually scored with the league's table -- the ones
+        # that fell back are being scored by Sleeper, so its rules are not
+        # "inert" for them and the difference is not the league's to read.
+        scored = [(n, p, st) for n, p, st in lines if p in scorable]
+        inert = unused_keys([(n, st) for n, _p, st in scored], table)
         if inert:
-            print(f"  {len(inert)} of your league's rules are inert -- Sleeper "
-                  f"projects no such stat, so they never pay out:")
+            print(f"  {len(inert)} of your league's rules are inert across "
+                  f"{', '.join(sorted(scorable))} -- Sleeper projects no such "
+                  "stat, so they never pay out:")
             print("    " + ", ".join(inert))
-        print()
+            print()
         print(f"  your scoring vs Sleeper's {args.scoring}, by position")
         print(f"  {'pos':>5}{'players':>9}{'mean diff':>12}{'largest':>10}")
-        for position, (count, mean, worst) in compare_tables(lines, table).items():
+        for position, (count, mean, worst) in compare_tables(scored, table).items():
             print(f"  {position:>5}{count:>9}{mean:>+12.1f}{worst:>+10.1f}")
         print()
 

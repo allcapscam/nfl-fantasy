@@ -104,6 +104,9 @@ class Reconciliation:
     worst_error: float
     worst_player: str | None
     missing_keys: list[str]
+    #: Players skipped because their line carried no stat the table names, so
+    #: there was nothing to reconcile -- see `reconcile`.
+    unscoreable: int = 0
 
     @property
     def agreement(self) -> float:
@@ -128,6 +131,11 @@ class Reconciliation:
             f"worst {self.worst_error:.2f}"
             + (f" ({self.worst_player})" if self.worst_player else "")
         ]
+        if self.unscoreable:
+            lines.append(
+                f"  {self.unscoreable} skipped: no stat the table names, so "
+                "nothing to reconcile"
+            )
         if self.missing_keys:
             lines.append(
                 "  stat keys named by the table but absent from every projection: "
@@ -152,17 +160,32 @@ def reconcile(
     `missing_keys` catches the failure that agreement alone would not -- a key
     nobody has, contributing zero to every player, so the totals still match
     while a whole scoring rule is silently inert.
+
+    Players whose line names none of the table's stats are skipped rather than
+    counted wrong: there is nothing to reconcile, so they are evidence about
+    the feed, not about the key names. A wholesale naming error still fails,
+    because it leaves *every* line unscoreable and `checked` at zero.
     """
     table = SLEEPER_HALF_PPR if table is None else table
-    checked = within = 0
+    named = set(table)
+    checked = within = unscoreable = 0
     total_error = worst = 0.0
     worst_player: str | None = None
     seen: set[str] = set()
 
     for name, stats in lines:
-        seen.update(k for k, v in stats.items() if v not in (None, ""))
+        present = {k for k, v in stats.items() if v not in (None, "")}
+        seen.update(present)
         reference = stats.get(reference_key)
         if reference in (None, ""):
+            continue
+        # A line carrying none of the stats the table names cannot be scored at
+        # all, so comparing it says nothing about whether the key names are
+        # right -- only that this player has no scorable stats. Sleeper files
+        # the occasional linebacker under K, tackles and no kicks; counted as a
+        # mismatch, one such record failed the whole position.
+        if not present & named:
+            unscoreable += 1
             continue
         try:
             expected = float(reference)
@@ -183,7 +206,35 @@ def reconcile(
         worst_error=worst,
         worst_player=worst_player,
         missing_keys=[k for k in table if k not in seen],
+        unscoreable=unscoreable,
     )
+
+
+def reconcile_by_position(
+    lines: Iterable[tuple[str, str, Mapping[str, object]]],
+    reference_key: str = "pts_half_ppr",
+    table: Mapping[str, float] | None = None,
+    tolerance: float = 0.5,
+) -> dict[str, Reconciliation]:
+    """Reconcile each position separately, because feeds are uneven.
+
+    One number over the whole board cannot tell "every stat key is misspelled"
+    from "this feed does not project defensive stats", and the two call for
+    opposite responses. Sleeper is the live example: its projected line for a
+    defence carries sacks, interceptions, fumble recoveries and blocked kicks
+    and *nothing else* -- no points-allowed bucket, no defensive touchdown --
+    so no scoring table can reproduce its own defensive total, while all 551
+    skill players reconcile exactly. Judged together that is 95% agreement and
+    a refusal; judged per position it is four positions proven and one the feed
+    cannot support, which is the truth and is actionable.
+    """
+    grouped: dict[str, list[tuple[str, Mapping[str, object]]]] = {}
+    for name, position, stats in lines:
+        grouped.setdefault(position, []).append((name, stats))
+    return {
+        position: reconcile(rows, reference_key, table, tolerance)
+        for position, rows in sorted(grouped.items())
+    }
 
 
 def unused_keys(
